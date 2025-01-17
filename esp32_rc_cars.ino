@@ -2,17 +2,18 @@
 #include <ESP32Servo.h>  // ESP32Servo library for servo control
 
 // Motor and Servo setup
-const int motorPin1 = 12;  // Motor control pin 1
-const int motorPin2 = 13;  // Motor control pin 2
+const int escPin = 12;  // Motor control pin 2
 const int servoPin = 14;   // Servo control pin
 
+Servo esc;
+Servo servo;
 
 // Define dead zone threshold (adjust as needed)
 const int MOTOR_DEAD_ZONE = 10;  // Threshold for motor to ignore small values
-const int SERVO_DEAD_ZONE = 10;  // Threshold for servo to ignore small values
+const int SERVO_DEAD_ZONE = 5;  // Threshold for servo to ignore small values
 
 // Smoothing factor (higher values make the smoothing slower)
-const float MOTOR_SMOOTHING_FACTOR = 0.4;  // Smoothing factor for motor
+const float MOTOR_SMOOTHING_FACTOR = 0.6;  // Smoothing factor for motor
 const float SERVO_SMOOTHING_FACTOR = 0.6;  // Smoothing factor for servo
 
 // Variables to store smoothed values
@@ -24,13 +25,19 @@ int lastServoPos = 90;     // To store last servo position for smoothing
 int motorSpeedSmoothFactor = 5; // The factor to control smoothing speed
 int servoPosSmoothFactor = 5;  // The factor to control servo smoothing speed
 
-int deadZone = 50;  // Configurable dead zone for joystick input
-
 const int RIGHT_STEERING_OFFSET = 50;
-const int LEFT_STEERING_OFFSET = 20;
+const int LEFT_STEERING_OFFSET = 30;
 
-// Create an instance of the ESP32Servo class
-Servo myServo;
+// Define the servo angle limits
+int minAngle = 0;
+int maxAngle = 180;
+
+// Define the left and right steering limits
+int leftLimit = minAngle + LEFT_STEERING_OFFSET;   // Maximum angle to the left (in degrees)
+int rightLimit = maxAngle - RIGHT_STEERING_OFFSET; // Maximum angle to the right (in degrees)
+
+// Define the center position of the servo (typically 90°)
+int centerPosition = 90;
 
 ControllerPtr myControllers[BP32_MAX_GAMEPADS];
 
@@ -112,20 +119,31 @@ void controlMotor(ControllerPtr ctl) {
     Serial.print(" - Throttle: ");
     Serial.println(smoothedMotorSpeed);
 
-    // Motor control using two pins for direction
-    if (smoothedMotorSpeed > 0) {
-        // Forward direction
-        analogWrite(motorPin1, smoothedMotorSpeed);
-        analogWrite(motorPin2, 0);
-    } else if (smoothedMotorSpeed < 0) {
-        // Reverse direction
-        analogWrite(motorPin1, 0);
-        analogWrite(motorPin2, -smoothedMotorSpeed);
-    } else {
-        // Stop motor
-        analogWrite(motorPin1, 0);
-        analogWrite(motorPin2, 0);
-    }
+    // Map the smoothed throttle value from -255 to 255 into a PWM signal range (1000 to 2000 microseconds)
+    int pwmValue = map(smoothedMotorSpeed, -255, 255, 2000, 1000);
+
+    // Set the PWM signal to the ESC
+    esc.writeMicroseconds(pwmValue);
+
+    // Print the PWM value for debugging
+    Serial.print(" - PWM Value: ");
+    Serial.println(pwmValue);
+}
+
+// Function to map the input value to a servo angle with different outer limits for left and right
+int mapSteering(int input) {
+  // Ensure the input is within the valid range for the servo
+  int angle = constrain(input, minAngle, maxAngle);
+
+  if (input < centerPosition) {  // Left steering (input < 90)
+    // Map the input range to a range between the center position and the left limit
+    angle = map(input, minAngle, centerPosition, leftLimit, centerPosition);
+  } else {  // Right steering (input >= 90)
+    // Map the input range to a range between the center position and the right limit
+    angle = map(input, centerPosition, maxAngle, centerPosition, rightLimit);
+  }
+
+  return angle;
 }
 
 // Function to control the servo based on the joystick X-axis
@@ -139,18 +157,15 @@ void controlServo(ControllerPtr ctl) {
     }
 
     // Smooth the servo position
-    smoothedServoPos = smoothedServoPos + SERVO_SMOOTHING_FACTOR * (servoPos - smoothedServoPos);
-
-    // Ensure the servo position converges to 90 when near it
-    if (abs(smoothedServoPos - 90) < 5) {
-        smoothedServoPos = 90;  // Force it to return exactly to 90 if close enough
-    }
+    // smoothedServoPos = smoothedServoPos + SERVO_SMOOTHING_FACTOR * (servoPos - smoothedServoPos);
+    smoothedServoPos = servoPos;
 
     Serial.print(" - Servo position: ");
     Serial.println(smoothedServoPos);
 
     // Write the smoothed position to the servo
-    myServo.write(constrain(smoothedServoPos, 0 + LEFT_STEERING_OFFSET, 180 - RIGHT_STEERING_OFFSET));  // Constrain within car's steering range
+    // servo.write(constrain(smoothedServoPos, 0 + LEFT_STEERING_OFFSET, 180 - RIGHT_STEERING_OFFSET));  // Constrain within car's steering range
+    servo.write(mapSteering(smoothedServoPos));  // Constrain within car's steering range
 }
 
 void processGamepad(ControllerPtr ctl) {
@@ -242,12 +257,8 @@ void setup() {
     // By default, it is disabled.
     BP32.enableVirtualDevice(false);
 
-    // Initialize motor pins
-    pinMode(motorPin1, OUTPUT);
-    pinMode(motorPin2, OUTPUT);
-    
-    // Initialize the servo
-    myServo.attach(servoPin);  // Attach servo to pin
+    esc.attach(escPin);  // Attach esc to pin
+    servo.attach(servoPin);  // Attach servo to pin
 }
 
 // Arduino loop function. Runs in CPU 1.
@@ -265,5 +276,5 @@ void loop() {
     // https://stackoverflow.com/questions/66278271/task-watchdog-got-triggered-the-tasks-did-not-reset-the-watchdog-in-time
 
     //     vTaskDelay(1);
-    delay(50);
+    delay(30);
 }
