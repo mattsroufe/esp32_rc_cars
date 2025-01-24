@@ -1,280 +1,232 @@
+#define CONTROL_WEB // Uncomment this line for Web control
+// #define CONTROL_BLUETOOTH  // Uncomment this line for Bluetooth control
+
+#include "secrets.h"
+#include <Arduino.h>
+#include "soc/rtc_cntl_reg.h" //disable brownout problems
+#include "Esc.h"          // Include the Esc class header file
+#include <SD.h>           // Include the SD library
+#include "ServoControl.h" // Include the ServoControl class header
+
+#ifdef CONTROL_WEB
+// Web control logic
+
+#include <WiFi.h>
+#include <ArduinoWebsockets.h>
+#include "esp_camera.h"
+
+#endif
+
+#ifdef CONTROL_BLUETOOTH
+
+// Bluetooth control logic
 #include <Bluepad32.h>
-#include <ESP32Servo.h>  // ESP32Servo library for servo control
 
-// Motor and Servo setup
-const int escPin = 12;  // Motor control pin 2
-const int servoPin = 14;   // Servo control pin
+#endif
 
-Servo esc;
-Servo servo;
+// configuration for AI Thinker Camera board
+#define PWDN_GPIO_NUM 32
+#define RESET_GPIO_NUM -1
+#define XCLK_GPIO_NUM 0
+#define SIOD_GPIO_NUM 26
+#define SIOC_GPIO_NUM 27
+#define Y9_GPIO_NUM 35
+#define Y8_GPIO_NUM 34
+#define Y7_GPIO_NUM 39
+#define Y6_GPIO_NUM 36
+#define Y5_GPIO_NUM 21
+#define Y4_GPIO_NUM 19
+#define Y3_GPIO_NUM 18
+#define Y2_GPIO_NUM 5
+#define VSYNC_GPIO_NUM 25
+#define HREF_GPIO_NUM 23
+#define PCLK_GPIO_NUM 22
+
+// Motor and servo pins
+#define DUMMY_PIN -1 // Pin for servo control
+#define SERVO_PIN 12 // Pin for servo control
+#define ESC_PIN 13   // Pin for motor control
 
 // Define dead zone threshold (adjust as needed)
-const int MOTOR_DEAD_ZONE = 10;  // Threshold for motor to ignore small values
-const int SERVO_DEAD_ZONE = 5;  // Threshold for servo to ignore small values
-
-// Smoothing factor (higher values make the smoothing slower)
-const float MOTOR_SMOOTHING_FACTOR = 0.6;  // Smoothing factor for motor
-const float SERVO_SMOOTHING_FACTOR = 0.6;  // Smoothing factor for servo
-
-// Variables to store smoothed values
-int smoothedMotorSpeed = 0;
-int smoothedServoPos = 90;
-int motorSpeed = 0;        // Motor speed (controlled by left joystick Y-axis)
-int lastMotorSpeed = 0;    // To store last motor speed for smoothing
-int lastServoPos = 90;     // To store last servo position for smoothing
-int motorSpeedSmoothFactor = 5; // The factor to control smoothing speed
-int servoPosSmoothFactor = 5;  // The factor to control servo smoothing speed
+const int MOTOR_DEAD_ZONE = 5; // Threshold for motor to ignore small values
+const int SERVO_DEAD_ZONE = 5; // Threshold for servo to ignore small values
 
 const int RIGHT_STEERING_OFFSET = 50;
-const int LEFT_STEERING_OFFSET = 30;
+const int LEFT_STEERING_OFFSET = 25;
 
-// Define the servo angle limits
-int minAngle = 0;
-int maxAngle = 180;
+#ifdef CONTROL_WEB
+using namespace websockets;
+WebsocketsClient client;
+#endif
 
-// Define the left and right steering limits
-int leftLimit = minAngle + LEFT_STEERING_OFFSET;   // Maximum angle to the left (in degrees)
-int rightLimit = maxAngle - RIGHT_STEERING_OFFSET; // Maximum angle to the right (in degrees)
+// Create two dummy instances of the Servo class to increment the pwm channels since we're using the camera
+ServoControl dummyServo1(DUMMY_PIN);
+ServoControl dummyServo2(DUMMY_PIN);
+ServoControl steeringServo(SERVO_PIN, LEFT_STEERING_OFFSET, RIGHT_STEERING_OFFSET, SERVO_DEAD_ZONE);
+Esc esc(ESC_PIN);
 
-// Define the center position of the servo (typically 90°)
-int centerPosition = 90;
+// Time tracking variables
+unsigned long lastCommandTime = 0;
+const int COMMAND_TIMEOUT = 20; // command timeout ms
 
-ControllerPtr myControllers[BP32_MAX_GAMEPADS];
+void onMessageCallback(WebsocketsMessage message)
+{
+  lastCommandTime = millis();
+  String command = message.data();
+  // Serial.print("Got Message: ");
+  // Serial.println(command);
 
-// This callback gets called any time a new gamepad is connected.
-// Up to 4 gamepads can be connected at the same time.
-void onConnectedController(ControllerPtr ctl) {
-    bool foundEmptySlot = false;
-    for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
-        if (myControllers[i] == nullptr) {
-            Serial.printf("CALLBACK: Controller is connected, index=%d\n", i);
-            // Additionally, you can get certain gamepad properties like:
-            // Model, VID, PID, BTAddr, flags, etc.
-            ControllerProperties properties = ctl->getProperties();
-            Serial.printf("Controller model: %s, VID=0x%04x, PID=0x%04x\n", ctl->getModelName().c_str(), properties.vendor_id,
-                           properties.product_id);
-            myControllers[i] = ctl;
-            foundEmptySlot = true;
-            break;
-        }
-    }
-    if (!foundEmptySlot) {
-        Serial.println("CALLBACK: Controller connected, but could not found empty slot");
-    }
+  if (command.startsWith("MOTOR:"))
+  {
+    // Control motor speed (0-255)
+  }
+  else if (command.startsWith("SERVO:"))
+  {
+    // Control servo angle (0-180)
+  }
+  else if (command.startsWith("CONTROL:"))
+  {
+    // Control servo angle (0-180)
+    String commands_str = command.substring(8);
+    int colonIndex = commands_str.indexOf(":"); // Find the index of the colon
+    int speed = commands_str.substring(0, colonIndex).toInt();
+    speed = constrain(speed, -255, 255);
+    int angle = commands_str.substring(colonIndex + 1).toInt();
+    angle = constrain(angle, 0, 180);
+    esc.control(speed);
+    steeringServo.control(angle);
+    // xQueueOverwrite(controlQueue, &angle);
+  }
 }
 
-void onDisconnectedController(ControllerPtr ctl) {
-    bool foundController = false;
-
-    for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
-        if (myControllers[i] == ctl) {
-            Serial.printf("CALLBACK: Controller disconnected from index=%d\n", i);
-            myControllers[i] = nullptr;
-            foundController = true;
-            break;
-        }
-    }
-
-    if (!foundController) {
-        Serial.println("CALLBACK: Controller disconnected, but not found in myControllers");
-    }
+void onEventsCallback(WebsocketsEvent event, String data)
+{
+  if (event == WebsocketsEvent::ConnectionOpened)
+  {
+    Serial.println("Connnection Opened");
+  }
+  else if (event == WebsocketsEvent::ConnectionClosed)
+  {
+    Serial.println("Connnection Closed");
+  }
+  else if (event == WebsocketsEvent::GotPing)
+  {
+    Serial.println("Got a Ping!");
+  }
+  else if (event == WebsocketsEvent::GotPong)
+  {
+    Serial.println("Got a Pong!");
+  }
 }
 
-void dumpGamepad(ControllerPtr ctl) {
-    Serial.printf(
-        "idx=%d, dpad: 0x%02x, buttons: 0x%04x, axis L: %4d, %4d, axis R: %4d, %4d, brake: %4d, throttle: %4d, "
-        "misc: 0x%02x, gyro x:%6d y:%6d z:%6d, accel x:%6d y:%6d z:%6d\n",
-        ctl->index(),        // Controller Index
-        ctl->dpad(),         // D-pad
-        ctl->buttons(),      // bitmask of pressed buttons
-        ctl->axisX(),        // (-511 - 512) left X Axis
-        ctl->axisY(),        // (-511 - 512) left Y axis
-        ctl->axisRX(),       // (-511 - 512) right X axis
-        ctl->axisRY(),       // (-511 - 512) right Y axis
-        ctl->brake(),        // (0 - 1023): brake button
-        ctl->throttle(),     // (0 - 1023): throttle (AKA gas) button
-        ctl->miscButtons(),  // bitmask of pressed "misc" buttons
-        ctl->gyroX(),        // Gyro X
-        ctl->gyroY(),        // Gyro Y
-        ctl->gyroZ(),        // Gyro Z
-        ctl->accelX(),       // Accelerometer X
-        ctl->accelY(),       // Accelerometer Y
-        ctl->accelZ()        // Accelerometer Z
-    );
-}
+esp_err_t init_camera()
+{
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sscb_sda = SIOD_GPIO_NUM;
+  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
 
-// Function to control the motor based on the left joystick Y-axis
-void controlMotor(ControllerPtr ctl) {
-    // Map the joystick Y-axis to a motor speed range (0 to 255 for forward)
-    int throttle = map(ctl->axisY(), -511, 511, -255, 255);
+  // parameters for image quality and size
+  config.frame_size = FRAMESIZE_QVGA; // FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
+  config.jpeg_quality = 10;           // 10-63 lower number means higher quality
+  config.fb_count = 2;
 
-    // Apply dead zone to the throttle value
-    if (abs(throttle) < MOTOR_DEAD_ZONE) {
-        throttle = 0;  // Ignore small values within dead zone
-    }
+  // Camera init
+  esp_err_t err = esp_camera_init(&config);
 
-    // Smooth the motor speed
-    smoothedMotorSpeed = smoothedMotorSpeed + MOTOR_SMOOTHING_FACTOR * (throttle - smoothedMotorSpeed);
-
-    Serial.print(" - Throttle: ");
-    Serial.println(smoothedMotorSpeed);
-
-    // Map the smoothed throttle value from -255 to 255 into a PWM signal range (1000 to 2000 microseconds)
-    int pwmValue = map(smoothedMotorSpeed, -255, 255, 2000, 1000);
-
-    // Set the PWM signal to the ESC
-    esc.writeMicroseconds(pwmValue);
-
-    // Print the PWM value for debugging
-    Serial.print(" - PWM Value: ");
-    Serial.println(pwmValue);
-}
-
-// Function to map the input value to a servo angle with different outer limits for left and right
-int mapSteering(int input) {
-  // Ensure the input is within the valid range for the servo
-  int angle = constrain(input, minAngle, maxAngle);
-
-  if (input < centerPosition) {  // Left steering (input < 90)
-    // Map the input range to a range between the center position and the left limit
-    angle = map(input, minAngle, centerPosition, leftLimit, centerPosition);
-  } else {  // Right steering (input >= 90)
-    // Map the input range to a range between the center position and the right limit
-    angle = map(input, centerPosition, maxAngle, centerPosition, rightLimit);
+  if (err != ESP_OK)
+  {
+    Serial.printf("camera init FAIL: 0x%x", err);
+    return err;
   }
 
-  return angle;
+  Serial.println("camera init OK");
+
+  return ESP_OK;
+};
+
+esp_err_t init_wifi()
+{
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.println("Wifi init ");
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.println("WiFi OK");
+  Serial.println("connecting to WS: ");
+  client.onMessage(onMessageCallback);
+  client.onEvent(onEventsCallback);
+  bool connected = client.connect(WS_SERVER_URL);
+  if (!connected)
+  {
+    Serial.println("WS connect failed!");
+    Serial.println(WiFi.localIP());
+    return ESP_FAIL;
+  }
+
+  Serial.println("WS OK");
+  // client.send("hello from ESP32 camera stream!");
+  return ESP_OK;
+};
+
+void setup()
+{
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
+  Serial.begin(115200);
+  Serial.setDebugOutput(true);
+
+  // Now, disable the SD card to free up pins
+  SD.end();
+  Serial.println("SD Card disabled. Pins freed!");
+
+  // xTaskCreate(ServoTask, "Servo", 1000, NULL, 1, NULL);
+
+  init_camera();
+  init_wifi();
+  steeringServo.initialize();
+  esc.initialize();
 }
 
-// Function to control the servo based on the joystick X-axis
-void controlServo(ControllerPtr ctl) {
-    // Map joystick X-axis to servo range (0-180)
-    int servoPos = map(ctl->axisRX(), -511, 511, 0, 180);
+void loop()
+{
+  if (millis() - COMMAND_TIMEOUT >= lastCommandTime)
+  {
+    esc.control(0); // Start motor at 0 speed
+    steeringServo.control(90);
+    // Serial.println("Throttle reset to 0 due to timeout.");
+  }
 
-    // Apply dead zone to the servo position (ignore small values near neutral)
-    if (abs(servoPos - 90) < SERVO_DEAD_ZONE) {
-        servoPos = 90;  // Ignore small values near the center (neutral position)
-    }
+  if (client.available())
+  {
+    camera_fb_t *fb = esp_camera_fb_get();
 
-    // Smooth the servo position
-    // smoothedServoPos = smoothedServoPos + SERVO_SMOOTHING_FACTOR * (servoPos - smoothedServoPos);
-    smoothedServoPos = servoPos;
+    if (!fb) return;
 
-    Serial.print(" - Servo position: ");
-    Serial.println(smoothedServoPos);
+    client.sendBinary((const char *)fb->buf, fb->len);
 
-    // Write the smoothed position to the servo
-    // servo.write(constrain(smoothedServoPos, 0 + LEFT_STEERING_OFFSET, 180 - RIGHT_STEERING_OFFSET));  // Constrain within car's steering range
-    servo.write(mapSteering(smoothedServoPos));  // Constrain within car's steering range
-}
+    esp_camera_fb_return(fb);
 
-void processGamepad(ControllerPtr ctl) {
-    // There are different ways to query whether a button is pressed.
-    // By query each button individually:
-    //  a(), b(), x(), y(), l1(), etc...
-    if (ctl->a()) {
-        static int colorIdx = 0;
-        // Some gamepads like DS4 and DualSense support changing the color LED.
-        // It is possible to change it by calling:
-        switch (colorIdx % 3) {
-            case 0:
-                // Red
-                ctl->setColorLED(255, 0, 0);
-                break;
-            case 1:
-                // Green
-                ctl->setColorLED(0, 255, 0);
-                break;
-            case 2:
-                // Blue
-                ctl->setColorLED(0, 0, 255);
-                break;
-        }
-        colorIdx++;
-    }
-
-    if (ctl->b()) {
-        // Turn on the 4 LED. Each bit represents one LED.
-        static int led = 0;
-        led++;
-        // Some gamepads like the DS3, DualSense, Nintendo Wii, Nintendo Switch
-        // support changing the "Player LEDs": those 4 LEDs that usually indicate
-        // the "gamepad seat".
-        // It is possible to change them by calling:
-        ctl->setPlayerLEDs(led & 0x0f);
-    }
-
-    if (ctl->x()) {
-        // Some gamepads like DS3, DS4, DualSense, Switch, Xbox One S, Stadia support rumble.
-        // It is possible to set it by calling:
-        // Some controllers have two motors: "strong motor", "weak motor".
-        // It is possible to control them independently.
-        ctl->playDualRumble(0 /* delayedStartMs */, 250 /* durationMs */, 0x80 /* weakMagnitude */,
-                            0x40 /* strongMagnitude */);
-    }
-
-    // Another way to query controller data is by getting the buttons() function.
-    // See how the different "dump*" functions dump the Controller info.
-    // dumpGamepad(ctl);
-
-    controlMotor(ctl);  // Control motor based on left joystick Y
-    controlServo(ctl);  // Control servo based on left joystick X
-}
-
-void processControllers() {
-    for (auto myController : myControllers) {
-        if (myController && myController->isConnected() && myController->hasData()) {
-            if (myController->isGamepad()) {
-                processGamepad(myController);
-            } else {
-                Serial.println("Unsupported controller");
-            }
-        }
-    }
-}
-
-// Arduino setup function. Runs in CPU 1
-void setup() {
-    Serial.begin(115200);
-    Serial.printf("Firmware: %s\n", BP32.firmwareVersion());
-    const uint8_t* addr = BP32.localBdAddress();
-    Serial.printf("BD Addr: %2X:%2X:%2X:%2X:%2X:%2X\n", addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
-
-    // Setup the Bluepad32 callbacks
-    BP32.setup(&onConnectedController, &onDisconnectedController);
-
-    // "forgetBluetoothKeys()" should be called when the user performs
-    // a "device factory reset", or similar.
-    // Calling "forgetBluetoothKeys" in setup() just as an example.
-    // Forgetting Bluetooth keys prevents "paired" gamepads to reconnect.
-    // But it might also fix some connection / re-connection issues.
-    BP32.forgetBluetoothKeys();
-
-    // Enables mouse / touchpad support for gamepads that support them.
-    // When enabled, controllers like DualSense and DualShock4 generate two connected devices:
-    // - First one: the gamepad
-    // - Second one, which is a "virtual device", is a mouse.
-    // By default, it is disabled.
-    BP32.enableVirtualDevice(false);
-
-    esc.attach(escPin);  // Attach esc to pin
-    servo.attach(servoPin);  // Attach servo to pin
-}
-
-// Arduino loop function. Runs in CPU 1.
-void loop() {
-    // This call fetches all the controllers' data.
-    // Call this function in your main loop.
-    bool dataUpdated = BP32.update();
-    if (dataUpdated)
-        processControllers();
-
-    // The main loop must have some kind of "yield to lower priority task" event.
-    // Otherwise, the watchdog will get triggered.
-    // If your main loop doesn't have one, just add a simple `vTaskDelay(1)`.
-    // Detailed info here:
-    // https://stackoverflow.com/questions/66278271/task-watchdog-got-triggered-the-tasks-did-not-reset-the-watchdog-in-time
-
-    //     vTaskDelay(1);
-    delay(30);
+    client.poll();
+  }
 }
