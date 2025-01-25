@@ -4,9 +4,9 @@
 #include "secrets.h"
 #include <Arduino.h>
 #include "soc/rtc_cntl_reg.h" //disable brownout problems
-#include "Esc.h"          // Include the Esc class header file
-#include <SD.h>           // Include the SD library
-#include "ServoControl.h" // Include the ServoControl class header
+#include "Esc.h"              // Include the Esc class header file
+#include <SD.h>               // Include the SD library
+#include "ServoControl.h"     // Include the ServoControl class header
 
 #ifdef CONTROL_WEB
 // Web control logic
@@ -51,18 +51,20 @@
 const int MOTOR_DEAD_ZONE = 5; // Threshold for motor to ignore small values
 const int SERVO_DEAD_ZONE = 5; // Threshold for servo to ignore small values
 
-const int RIGHT_STEERING_OFFSET = 50;
-const int LEFT_STEERING_OFFSET = 25;
+// range for ackerman steering to align properly
+const int MIN_SERVO_ANGLE = 65;
+const int MAX_SERVO_ANGLE = 140;
 
 #ifdef CONTROL_WEB
 using namespace websockets;
 WebsocketsClient client;
-#endif
 
 // Create two dummy instances of the Servo class to increment the pwm channels since we're using the camera
 ServoControl dummyServo1(DUMMY_PIN);
 ServoControl dummyServo2(DUMMY_PIN);
-ServoControl steeringServo(SERVO_PIN, LEFT_STEERING_OFFSET, RIGHT_STEERING_OFFSET, SERVO_DEAD_ZONE);
+#endif
+
+ServoControl steeringServo(SERVO_PIN, MIN_SERVO_ANGLE, MAX_SERVO_ANGLE, SERVO_DEAD_ZONE);
 Esc esc(ESC_PIN);
 
 // Time tracking variables
@@ -221,7 +223,8 @@ void loop()
   {
     camera_fb_t *fb = esp_camera_fb_get();
 
-    if (!fb) return;
+    if (!fb)
+      return;
 
     client.sendBinary((const char *)fb->buf, fb->len);
 

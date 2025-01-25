@@ -6,26 +6,25 @@
 class ServoControl
 {
 public:
-    // Constructor to initialize the servo with pin, offsets, and dead zone
-    ServoControl(int pin, int leftOffset = 25, int rightOffset = 50, int deadZone = 5);
+    // Constructor to initialize the servo with pin, min/max angle, and dead zone
+    ServoControl(int pin, int minAngle = 0, int maxAngle = 180, int deadZone = 0);
 
-    // Initialize the servo (attach and set to center position)
+    // Initialize the servo
     void initialize();
 
-    // Control the servo position based on the input, applying dead zone and steering offsets
+    // Control the servo based on the input position
     void control(int position);
 
 private:
-    int _pin;             // Pin where the servo is connected
-    Servo _servo;         // Servo object
-    int _centerPos = 90;  // Default center position of the servo (can be adjusted)
-    int _leftOffset = 0;  // Left steering offset
-    int _rightOffset = 0; // Right steering offset
-    int _deadZone = 0;    // Dead zone for servo control
-    int _minAngle = 0;    // Min angle (0 degrees)
-    int _maxAngle = 180;  // Max angle (180 degrees)
+    int _pin;            // Pin to which the servo is connected
+    int _minAngle = 0;   // Minimum angle for the servo (left limit)
+    int _maxAngle = 180; // Maximum angle for the servo (right limit)
+    int _deadZone = 0;   // Dead zone for the servo control
 
-    // Helper method to map input values to a specific steering angle
+    Servo _servo;              // Servo object to control the physical servo
+    const int _centerPos = 90; // Center position (90 degrees)
+
+    // Map the input value (0-180) to the servo angle range with proper limits
     int mapSteering(int input);
 };
 

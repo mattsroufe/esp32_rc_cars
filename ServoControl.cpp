@@ -1,11 +1,11 @@
 #include "ServoControl.h"
 
-// Constructor to initialize the servo with pin, offsets, and dead zone
-ServoControl::ServoControl(int pin, int leftOffset, int rightOffset, int deadZone)
+// Constructor to initialize the servo with pin, min/max angles, and dead zone
+ServoControl::ServoControl(int pin, int minAngle, int maxAngle, int deadZone)
 {
     _pin = pin;
-    _leftOffset = leftOffset;
-    _rightOffset = rightOffset;
+    _minAngle = minAngle;   // Minimum angle (left limit)
+    _maxAngle = maxAngle;   // Maximum angle (right limit)
     _deadZone = deadZone;
 }
 
@@ -16,20 +16,26 @@ void ServoControl::initialize()
     _servo.write(_centerPos); // Set the servo to the center position (90 degrees)
 }
 
-// Map the input value to a servo angle with different outer limits for left and right
+// Map the input value (0 to 180) to the servo's range (left and right travel based on min/max angles)
 int ServoControl::mapSteering(int input)
 {
-    // Ensure the input is within the valid range for the servo
-    int angle = constrain(input, _minAngle, _maxAngle);
+    int angle = constrain(input, 0, 180);  // Ensure the input is within 0 to 180
 
-    // Apply left or right offsets based on the input value
+    // Apply dead zone to the input (ignore small values near neutral)
+    if (abs(input - _centerPos) < _deadZone)
+    {
+        angle = _centerPos;  // Neutral position
+    }
+
     if (input < _centerPos)
     { // Left steering (input < 90)
-        angle = map(input, _minAngle, _centerPos, _leftOffset, _centerPos);
+        // Map the input range (0-90) to the left angle range (_minAngle to _centerPos)
+        angle = map(input, 0, _centerPos, _minAngle, _centerPos);
     }
     else
     { // Right steering (input >= 90)
-        angle = map(input, _centerPos, _maxAngle, _centerPos, _maxAngle - _rightOffset);
+        // Map the input range (90-180) to the right angle range (_centerPos to _maxAngle)
+        angle = map(input, _centerPos, 180, _centerPos, _maxAngle);
     }
 
     return angle;
@@ -38,13 +44,7 @@ int ServoControl::mapSteering(int input)
 // Control the servo based on the position, applying dead zone
 void ServoControl::control(int position)
 {
-    // Apply dead zone to the servo position (ignore small values near neutral)
-    if (abs(position - _centerPos) < _deadZone)
-    {
-        position = _centerPos; // Ignore small values near the center (neutral position)
-    }
-
-    // Map the input position to the appropriate angle
+    // Map the input position (0-180) to the appropriate servo angle
     int angle = mapSteering(position);
 
     // Write the calculated angle to the servo
