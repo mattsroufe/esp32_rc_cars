@@ -11,7 +11,7 @@ Esc::Esc(int pin)
 // Method to initialize the ESC (sets it to 0 speed initially)
 void Esc::initialize()
 {
-    _esc.writeMicroseconds(1500); // Start motor at 0 speed
+    _esc.writeMicroseconds(NEUTRAL_SPEED_MS); // Start motor at 0 speed
     delay(1000);                  // Wait for ESC initialization
 }
 
