@@ -49,7 +49,8 @@ def process_frame_canvas(frame_queues: VideoFrames) -> np.ndarray:
     rows, cols = calculate_grid_dimensions(num_clients)
     canvas = np.zeros((rows * FRAME_HEIGHT, cols * FRAME_WIDTH, 3), dtype=np.uint8)
 
-    for i, (client_ip, frame_queue) in enumerate(frame_queues.items()):
+    for i, (client_ip, client_data) in enumerate(frame_queues.items()):
+        frame_queue = client_data["frames"]
         if not frame_queue:
             continue
 
@@ -68,13 +69,38 @@ async def handle_text_message(msg: WSMessage, request: web.Request, ws: web.WebS
         await ws.close()
     else:
         request.app['control_commands'].update(json.loads(msg.data))
-        await ws.send_json(list(request.app['video_frames'].keys()))
+        video_info = {
+            client_ip: {
+                "fps": client_data["fps"],
+                "frame_count": client_data["frame_count"]
+            }
+            for client_ip, client_data in request.app['video_frames'].items()
+        }
+        # Send video frame information back to the client
+        await ws.send_json(video_info)
 
 async def handle_binary_message(msg: WSMessage, client_ip: str, request: web.Request, ws: web.WebSocketResponse) -> None:
     """Handle binary messages from WebSocket."""
-    frame_queue = request.app['video_frames'].setdefault(client_ip, deque(maxlen=10))
-    frame_queue.append((msg.data, time()))  # Append frame with timestamp
+    frame_queue = request.app['video_frames'].setdefault(client_ip, {"frames": deque(maxlen=10), "fps": 0.0, "frame_count": 0})
 
+    # Get the current timestamp
+    timestamp = time()
+
+    # Append the frame with the timestamp
+    frame_queue["frames"].append((msg.data, timestamp))
+
+    # Calculate the FPS based on the frame queue
+    fps = calculate_frame_rate(frame_queue["frames"])
+    frame_count = len(frame_queue["frames"])
+
+    # Update FPS and frame count in the dictionary
+    frame_queue["fps"] = fps
+    frame_queue["frame_count"] = frame_count
+
+    # Save the updated frame queue back to the dictionary
+    request.app['video_frames'][client_ip] = frame_queue
+
+    # Check for control commands for this client
     if client_ip in request.app['control_commands']:
         command = request.app['control_commands'][client_ip]
         await ws.send_str(f"CONTROL:{command[0]}:{command[1]}")

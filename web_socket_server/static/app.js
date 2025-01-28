@@ -1,10 +1,26 @@
 const ws = new WebSocket('ws://localhost:8080/ws');
 const GAMEPAD_POLLING_INTERVAL = 30; // ms for polling gamepad status
-let clients = []
+let clients = [];
+
+// Holds FPS and frame count for each client
+let clientStats = {};
 
 ws.onmessage = function (event) {
-  clients = JSON.parse(event.data)
-  // Handle incoming WebSocket messages if needed
+  const json = JSON.parse(event.data);
+
+  // Update the client list
+  clients = Object.keys(json);
+
+  // Update the FPS and frame count for each client
+  let i = 0;
+  Object.keys(json).forEach(clientIp => {
+    const stats = json[clientIp];
+    clientStats[clientIp] = stats;
+
+    // Update the client's gamepad panel with FPS and frame count
+    updateGamepadPanel(i, stats.fps, stats.frame_count);
+    i++;
+  });
 };
 
 function sendMessage() {
@@ -113,3 +129,18 @@ window.addEventListener("gamepaddisconnected", (event) => {
 // Start the polling loop
 pollGamepads();
 
+// Update the gamepad panel with FPS and frame count information
+function updateGamepadPanel(clientIp, fps, frameCount) {
+  const gamepadPanel = document.getElementById(`gamepad-info-${clientIp}`);
+  if (gamepadPanel) {
+    let statsContainer = gamepadPanel.querySelector('.stats');
+    if (!statsContainer) {
+      statsContainer = document.createElement('div');
+      statsContainer.classList.add('stats');
+      gamepadPanel.appendChild(statsContainer);
+    }
+
+    // Update FPS and frame count
+    statsContainer.innerHTML = `FPS: ${fps}<br>Frames: ${frameCount}`;
+  }
+}
