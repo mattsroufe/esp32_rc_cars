@@ -118,7 +118,7 @@ esp_err_t init_camera()
 
     // parameters for image quality and size
     config.frame_size = FRAMESIZE_QVGA; // FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
-    config.jpeg_quality = 10;           // 10-63 lower number means higher quality
+    config.jpeg_quality = 10;           // 0-63 lower number means higher quality
     config.fb_count = 2;
 
     // Camera init

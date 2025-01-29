@@ -40,7 +40,7 @@ This project demonstrates an ESP32-based remote-controlled camera system capable
 Install the following Python libraries:
 
 ```bash
-pip install aiohttp opencv-python numpy
+pip3 install aiohttp opencv-python numpy
 ```
 
 ---
