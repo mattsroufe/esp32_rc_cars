@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import io
 import json
 from typing import Dict, Deque, Tuple, Any, Optional, Generator
 from aiohttp import web, WSCloseCode, WSMessage
@@ -9,6 +10,7 @@ import numpy as np
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from time import time
+from PIL import Image, ImageDraw, ImageFont
 
 # Constants
 FRAME_WIDTH: int = 320
@@ -138,7 +140,7 @@ async def generate_frames(request: web.Request, pool: ProcessPoolExecutor) -> Ge
         yield jpeg_frame.tobytes()
         await asyncio.sleep(FRAME_RATE)
 
-async def stream_video(request: web.Request) -> web.StreamResponse:
+async def stream_video_old(request: web.Request) -> web.StreamResponse:
     """Stream video frames as an HTTP response."""
     response = web.StreamResponse(
         status=200,
@@ -156,6 +158,41 @@ async def stream_video(request: web.Request) -> web.StreamResponse:
             b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
         )
     return response
+
+# Function to generate an image with an incrementing integer
+def generate_image(frame_number):
+    # Create an image with a black background
+    img = Image.new('RGB', (640, 480), color='black')
+    draw = ImageDraw.Draw(img)
+
+    # Draw the frame number as text on the image
+    text = f"Frame: {frame_number}"
+    font = ImageFont.load_default()
+    draw.text((50, 200), text, font=font, fill="white")
+
+    # Save image to a BytesIO object
+    img_byte_array = io.BytesIO()
+    img.save(img_byte_array, format='JPEG')
+    img_byte_array.seek(0)
+
+    return img_byte_array.getvalue()
+
+# WebSocket handler for video stream
+async def stream_video(websocket):
+    frame_number = 0
+    while True:
+        # Generate the image for the current frame
+        image_data = generate_image(frame_number)
+
+        # Send the image data as a binary message
+        await websocket.send(image_data)
+
+        # Increment the frame number
+        frame_number += 1
+
+        # Sleep to control the frame rate (frame rate = 1 / sleep_time)
+        await asyncio.sleep(1 / FRAME_RATE)
+
 
 # Cleanup Function
 async def cleanup(app: web.Application) -> None:

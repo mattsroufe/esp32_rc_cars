@@ -23,7 +23,7 @@
       </div>
     </div>
     <div class="video-section">
-      <img src="http://localhost:8080/video" alt="Video Stream"></img>
+      <img id="video" alt="Video Stream"></img>
       <!-- <video src="http://localhost:8000/video" autoplay muted loop></video> -->
     </div>
     <div class="side-panels">
@@ -39,7 +39,34 @@
       </div>
     </div>
   </div>
-  <script src="./static/app.js"></script>
+  <script>
+      const videoElement = document.getElementById("video");
+      const socket = new WebSocket("ws://localhost:8080/video");
+
+      // Handle WebSocket open event
+      socket.addEventListener("open", () => {
+          console.log("Connected to WebSocket video stream");
+      });
+
+      // Handle WebSocket message event (video frames from the server)
+      socket.addEventListener("message", (event) => {
+          const arrayBuffer = event.data;
+          const blob = new Blob([arrayBuffer], { type: 'image/jpeg' });
+          const objectURL = URL.createObjectURL(blob);
+           videoElement.src = objectURL;
+       });
+
+       // Handle WebSocket close event
+       socket.addEventListener("close", () => {
+           console.log("Disconnected from WebSocket video stream");
+       });
+
+       // Handle WebSocket error event
+       socket.addEventListener("error", (error) => {
+           console.error("WebSocket Error:", error);
+       });
+  </script>
+  <!-- <script src="./static/app.js"></script> -->
 </body>
 
 </html>
