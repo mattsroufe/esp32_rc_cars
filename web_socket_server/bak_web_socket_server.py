@@ -4,19 +4,38 @@ import numpy as np
 import os
 from aiohttp import web
 
-# Frame rate configuration
-FRAME_RATE = 30  # Frames per second (adjustable)
 HTTP_PORT = 8080  # Port for the HTTP server (serving HTML)
 
-# Function to generate an image with an incrementing integer using OpenCV
-def generate_image(frame_number):
-    # Create a black image (480p resolution)
-    img = np.zeros((480, 640, 3), dtype=np.uint8)
+# Frame rate configuration
+FRAME_RATE = 30  # Frames per second (adjustable)
+FRAME_WIDTH: int = 320
+FRAME_HEIGHT: int = 240
 
-    # Add frame number text onto the image
-    text = f"Frame: {frame_number}"
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(img, text, (50, 240), font, 1, (255, 255, 255), 2, cv2.LINE_AA)
+def process_frame_canvas(frame_queues):
+    """Create a canvas with video frames arranged in a grid."""
+    num_clients = len(frame_queues)
+    if num_clients == 0:
+        return np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
+
+    rows, cols = calculate_grid_dimensions(num_clients)
+    canvas = np.zeros((rows * FRAME_HEIGHT, cols * FRAME_WIDTH, 3), dtype=np.uint8)
+
+    for i, (client_ip, client_data) in enumerate(frame_queues.items()):
+        frame_queue = client_data["frames"]
+        if not frame_queue:
+            continue
+
+        compressed_frame, _ = frame_queue[-1]  # Use the latest frame
+        frame_array = np.frombuffer(compressed_frame, dtype=np.uint8)
+        frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
+        x_offset, y_offset = get_offsets(i, cols)
+        canvas[y_offset:y_offset + FRAME_HEIGHT, x_offset:x_offset + FRAME_WIDTH] = frame
+
+    return canvas
+
+# Function to generate an image with an incrementing integer using OpenCV
+def generate_image(frame_queues):
+    img = process_frame_canvas(frame_queues)
 
     # Encode the image to JPEG format
     _, jpeg = cv2.imencode('.jpg', img)
@@ -25,11 +44,14 @@ def generate_image(frame_number):
     return jpeg.tobytes()
 
 # WebSocket handler for video stream (sending frames to client)
-async def video_stream(websocket, path):
+async def video_stream(request, websocket, path):
     frame_number = 0
     while True:
         # Generate the image for the current frame
-        image_data = generate_image(frame_number)
+        async with request.app['frame_lock']:
+            frame_queues = request.app['video_frames']
+
+        image_data = generate_image(frame_queues)
 
         # Send the image data as a binary message
         await websocket.send_bytes(image_data)
@@ -85,7 +107,7 @@ async def websocket_handler(request):
 
     # Route based on the path
     if path == "/video":
-        await video_stream(websocket, path)
+        await video_stream(request, websocket, path)
     elif path == "/ws":
         await video_capture(websocket, path)
     else:
@@ -97,6 +119,13 @@ async def websocket_handler(request):
 # Start the HTTP and WebSocket server with aiohttp
 async def init_app():
     app = web.Application()
+
+    # Shared state
+    app['video_frames']: VideoFrames = {}
+    # app['control_commands']: ControlCommands = {}
+    app['frame_lock'] = asyncio.Lock()
+    # app['shutdown_event'] = asyncio.Event()
+    # app['process_pool'] = ProcessPoolExecutor(max_workers=4)
 
     # Serve the index page on the root URL
     app.router.add_get('/', index)
