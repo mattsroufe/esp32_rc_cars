@@ -1,10 +1,13 @@
 import asyncio
+import base64
+import json
 import cv2
 import numpy as np
 import os
 from aiohttp import web
 from collections import deque
 from time import time
+from multiprocessing import Process, Queue
 
 SERVER_PORT = 8080  # Port for the HTTP and Websocket server
 
@@ -26,12 +29,18 @@ def get_offsets(index, cols):
     y_offset = (index // cols) * FRAME_HEIGHT
     return x_offset, y_offset
 
-def calculate_frame_rate(frame_queue):
-    """Calculate the frame rate from a queue of timestamps."""
-    timestamps = [ts for _, ts in frame_queue]
-    if len(timestamps) > 1:
-        return round((len(timestamps) - 1) / (timestamps[-1] - timestamps[0]), 1)
-    return 0.0
+# Function to generate an image with an incrementing integer using OpenCV
+def generate_image(frame_queues, output_queue):
+    img = process_frame_canvas(frame_queues)
+
+    # Encode the image to JPEG format
+    _, jpeg = cv2.imencode('.jpg', img)
+    
+    # Convert the image to bytes
+    image_data = jpeg.tobytes()
+
+    # Send the image data back to the main process
+    output_queue.put(image_data)
 
 def process_frame_canvas(frame_queues):
     """Create a canvas with video frames arranged in a grid."""
@@ -55,16 +64,6 @@ def process_frame_canvas(frame_queues):
 
     return canvas
 
-# Function to generate an image with an incrementing integer using OpenCV
-def generate_image(frame_queues):
-    img = process_frame_canvas(frame_queues)
-
-    # Encode the image to JPEG format
-    _, jpeg = cv2.imencode('.jpg', img)
-    
-    # Convert the image to bytes
-    return jpeg.tobytes()
-
 # WebSocket handler for video stream (sending frames to client)
 async def video_stream(request, websocket, path):
     frame_number = 0
@@ -73,7 +72,14 @@ async def video_stream(request, websocket, path):
         async with request.app['frame_lock']:
             frame_queues = request.app['video_frames']
 
-        image_data = generate_image(frame_queues)
+        # Use multiprocessing to process the frame grid
+        output_queue = Queue()
+        process = Process(target=generate_image, args=(frame_queues, output_queue))
+        process.start()
+        process.join()
+
+        # Get the image data from the output queue
+        image_data = output_queue.get()
 
         # Send the image data as a binary message
         await websocket.send_bytes(image_data)
@@ -112,23 +118,14 @@ async def video_capture(request, websocket, path):
                 # Append the frame with the timestamp
                 frame_queue["frames"].append((np_frame, timestamp))
 
-
-                # Optionally, display the received frame (for debugging purposes)
-                # cv2.imshow('Received Frame', frame)
-
-                # Wait for a keypress to exit (only if running a GUI to show frames)
-                # cv2.waitKey(1)  # This makes OpenCV non-blocking
-
         except Exception as e:
             print(f"Error receiving frame: {e}")
             break
 
 # Serve the index HTML page
 async def index(request):
-    # Path to the HTML file
     html_path = os.path.join(os.path.dirname(__file__), 'index.html')
     
-    # Read and return the HTML file as response
     with open(html_path, 'r') as f:
         return web.Response(text=f.read(), content_type='text/html')
 
@@ -140,7 +137,6 @@ async def websocket_handler(request):
     path = request.path
     print(f"Client connected with path: {path}")
 
-    # Route based on the path
     if path == "/video":
         await video_stream(request, websocket, path)
     elif path == "/ws":
@@ -156,17 +152,12 @@ async def init_app():
     app = web.Application()
 
     # Shared state
-    app['video_frames']: VideoFrames = {}
-    # app['control_commands']: ControlCommands = {}
+    app['video_frames'] = {}
     app['frame_lock'] = asyncio.Lock()
-    # app['shutdown_event'] = asyncio.Event()
-    # app['process_pool'] = ProcessPoolExecutor(max_workers=4)
 
-    # Serve the index page on the root URL
     app.router.add_get('/', index)
     app.router.add_static('/static', path='./static', name='static')
 
-    # WebSocket routes
     app.router.add_get('/video', websocket_handler)
     app.router.add_get('/ws', websocket_handler)
 
