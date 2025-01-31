@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Video Stream</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: black;
+        }
+
+        #video {
+            max-width: 100%;
+            max-height: 80%;
+        }
+    </style>
+</head>
+<body>
+    <h1 style="color: white;">WebSocket Video Stream</h1>
+    <img id="video" alt="Video Stream" />
+
+    <script>
+        const videoElement = document.getElementById("video");
+        const socket = new WebSocket("ws://localhost:8081/video");
+
+        // Handle WebSocket open event
+        socket.addEventListener("open", () => {
+            console.log("Connected to WebSocket video stream");
+        });
+
+        // Handle WebSocket message event (video frames from the server)
+        socket.addEventListener("message", (event) => {
+            const arrayBuffer = event.data;
+            const blob = new Blob([arrayBuffer], { type: 'image/jpeg' });
+            const objectURL = URL.createObjectURL(blob);
+            videoElement.src = objectURL;
+        });
+
+        // Handle WebSocket close event
+        socket.addEventListener("close", () => {
+            console.log("Disconnected from WebSocket video stream");
+        });
+
+        // Handle WebSocket error event
+        socket.addEventListener("error", (error) => {
+            console.error("WebSocket Error:", error);
+        });
+    </script>
+</body>
+</html>
+
