@@ -83,7 +83,10 @@ async def handle_text_message(msg: WSMessage, request: web.Request, ws: web.WebS
 
 async def handle_binary_message(msg: WSMessage, client_ip: str, request: web.Request, ws: web.WebSocketResponse) -> None:
     """Handle binary messages from WebSocket."""
-    frame_queue = request.app['video_frames'].setdefault(client_ip, {"frames": deque(maxlen=10), "fps": 0.0, "frame_count": 0})
+    if client_ip in request.app['video_frames']:
+        frame_queue = request.app['video_frames'][client_ip]
+    else:
+        frame_queue = request.app['video_frames'].setdefault(client_ip, {"frames": deque(maxlen=10), "fps": 0.0, "frame_count": 0})
 
     # Get the current timestamp
     timestamp = time()
