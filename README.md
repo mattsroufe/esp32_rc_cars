@@ -2,6 +2,12 @@
 
 ![](car_photo.jpeg)
 
+![](Screenshot from 2025-02-02 07-13-43.png)
+
+## Demo video
+
+https://youtu.be/OubYFXmvA1E
+
 This project demonstrates an ESP32-based remote-controlled camera system capable of transmitting live video streams over WebSockets and controlling motors and servos. A Python server application manages WebSocket communication and provides a web interface to view and control the ESP32 devices.
 
 ## Features
