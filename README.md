@@ -2,7 +2,7 @@
 
 ![](car_photo.jpeg)
 
-![](Screenshot from 2025-02-02 07-13-43.png)
+![](screenshot.png)
 
 ## Demo video
 
