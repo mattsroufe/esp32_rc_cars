@@ -1,4 +1,6 @@
-# ESP32 Camera Control Application
+# ESP32 RC Cars
+
+![](car_photo.jpeg)
 
 This project demonstrates an ESP32-based remote-controlled camera system capable of transmitting live video streams over WebSockets and controlling motors and servos. A Python server application manages WebSocket communication and provides a web interface to view and control the ESP32 devices.
 
