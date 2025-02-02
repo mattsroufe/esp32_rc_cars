@@ -29,6 +29,20 @@ This project demonstrates an ESP32-based remote-controlled camera system capable
 
 ---
 
+## Materials
+
+I bought everything for this kit from aliexpress:
+
+- Car chassis: https://www.aliexpress.com/item/32830665408.html
+- Electronic speed control: https://www.aliexpress.com/item/1005007716682815.html
+- Battery holder: https://www.aliexpress.com/item/1005006283625827.html
+- 2 18650 3.6v cells or 7.4v battery pack (I have used both, cells are more flexible for other projects)
+- ESP32-CAM: https://www.aliexpress.com/item/1005001468076374.html (Very important to get one with external antenna and
+  and I used the 170 degree fisheye camera)
+- Bluetooth Gamepad (I used a PS4 controller)
+
+___
+
 ## Software Requirements
 
 ### ESP32 Code
