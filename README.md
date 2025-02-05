@@ -35,11 +35,21 @@ I bought everything for this kit from aliexpress:
 
 - Car chassis: https://www.aliexpress.com/item/32830665408.html
 - Electronic speed control: https://www.aliexpress.com/item/1005007716682815.html
+  I used the 30 amp version because it had a better BEC output - 5v at 3 amps. Seems to be plenty of current to power
+  both the esc and servo.
 - Battery holder: https://www.aliexpress.com/item/1005006283625827.html
 - 2 18650 3.6v cells or 7.4v battery pack (I have used both, cells are more flexible for other projects)
 - ESP32-CAM: https://www.aliexpress.com/item/1005001468076374.html (Very important to get one with external antenna and
   and I used the 170 degree fisheye camera)
 - Bluetooth Gamepad (I used a PS4 controller)
+
+___
+
+## Wiring
+
+I took the three wires out of the servo that came with the car chassis and moved them into a 4-pin jst plug to plug into the esp32. I then spliced the postive and negative on the servo and added a 3-pin femal jst plug using a crimping tool. Finally, i connected the (white) esc control wire to 4-pin jst plug and 3-pin female plug. It looks like this:
+
+![](wiring.png)  ![](full-wiring.png)
 
 ___
 
