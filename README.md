@@ -47,7 +47,7 @@ ___
 
 ## Wiring
 
-I took the three wires out of the servo that came with the car chassis and moved them into a 4-pin jst plug to plug into the esp32. I then spliced the postive and negative on the servo and added a 3-pin femal jst plug using a crimping tool. Finally, i connected the (white) esc control wire to 4-pin jst plug and 3-pin female plug. It looks like this:
+I took the 3-pin jst adapter off the servo that came with the car chassis and moved them into a 4-pin jst plug to plug into the esp32. I then spliced the postive and negative leads on the servo and added a 3-pin female jst plug using a crimping tool. Finally, i connected the (white) esc control wire to the 4-pin jst plug and 3-pin female plug. It looks like this:
 
 ![](wiring.png)  ![](full-wiring.png)
 
