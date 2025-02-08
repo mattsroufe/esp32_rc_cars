@@ -9,6 +9,8 @@ import numpy as np
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from time import time
+import torch
+from ultralytics import YOLO
 
 # Constants
 FRAME_WIDTH: int = 320
@@ -40,7 +42,7 @@ def calculate_frame_rate(frame_queue: FrameQueue) -> float:
         return round((len(timestamps) - 1) / (timestamps[-1] - timestamps[0]), 1)
     return 0.0
 
-def process_frame_canvas(frame_queues: VideoFrames) -> np.ndarray:
+def process_frame_canvas(frame_queues: VideoFrames, model: any) -> np.ndarray:
     """Create a canvas with video frames arranged in a grid."""
     num_clients = len(frame_queues)
     if num_clients == 0:
@@ -57,8 +59,13 @@ def process_frame_canvas(frame_queues: VideoFrames) -> np.ndarray:
         compressed_frame, _ = frame_queue[-1]  # Use the latest frame
         frame_array = np.frombuffer(compressed_frame, dtype=np.uint8)
         frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
+
+        results = model(frame)
+        boxes = results[0].boxes.xywh.cpu()
+        annotated_frame = results[0].plot()
+
         x_offset, y_offset = get_offsets(i, cols)
-        canvas[y_offset:y_offset + FRAME_HEIGHT, x_offset:x_offset + FRAME_WIDTH] = frame
+        canvas[y_offset:y_offset + FRAME_HEIGHT, x_offset:x_offset + FRAME_WIDTH] = annotated_frame
 
     return canvas
 
@@ -130,14 +137,29 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
 
     return ws
 
-async def generate_frames(request: web.Request, pool: ProcessPoolExecutor) -> Generator[bytes, None, None]:
+async def generate_frames(request: web.Request) -> Generator[bytes, None, None]:
+    """Generate video frames for streaming."""
+    shutdown_event: asyncio.Event = request.app['shutdown_event']
+    model = request.app['model']  # Direct reference to the model
+    while not shutdown_event.is_set():
+        async with request.app['frame_lock']:
+            frame_queues = request.app['video_frames']
+
+        # Directly use the model on the frame (ensure the frame is a tensor)
+        canvas = process_frame_canvas(frame_queues, model)
+        _, jpeg_frame = cv2.imencode('.jpg', canvas)
+        yield jpeg_frame.tobytes()
+        await asyncio.sleep(FRAME_RATE)
+
+async def old_generate_frames(request: web.Request, pool: ProcessPoolExecutor) -> Generator[bytes, None, None]:
     """Generate video frames for streaming."""
     shutdown_event: asyncio.Event = request.app['shutdown_event']
     while not shutdown_event.is_set():
         async with request.app['frame_lock']:
             frame_queues = request.app['video_frames']
+            model = request.app['model']
 
-        canvas = await asyncio.get_event_loop().run_in_executor(pool, process_frame_canvas, frame_queues)
+        canvas = await asyncio.get_event_loop().run_in_executor(pool, process_frame_canvas, frame_queues, model)
         _, jpeg_frame = cv2.imencode('.jpg', canvas)
         yield jpeg_frame.tobytes()
         await asyncio.sleep(FRAME_RATE)
@@ -153,8 +175,8 @@ async def stream_video(request: web.Request) -> web.StreamResponse:
     )
     await response.prepare(request)
 
-    pool: ProcessPoolExecutor = request.app['process_pool']
-    async for frame in generate_frames(request, pool):
+    # pool: ProcessPoolExecutor = request.app['process_pool']
+    async for frame in generate_frames(request):
         await response.write(
             b'--frame\r\n'
             b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
@@ -172,6 +194,7 @@ async def cleanup(app: web.Application) -> None:
 def main() -> None:
     logging.basicConfig(level=logging.DEBUG)
     app = web.Application()
+    device = "cuda" if torch.cuda.is_available() else "cpu" # Select GPU if available
 
     # Shared state
     app['video_frames']: VideoFrames = {}
@@ -179,6 +202,8 @@ def main() -> None:
     app['frame_lock'] = asyncio.Lock()
     app['shutdown_event'] = asyncio.Event()
     app['process_pool'] = ProcessPoolExecutor(max_workers=4)
+    app['model'] = YOLO("yolov8n.pt").to(device) # Load YOLOv8n model (no FP16 precision)
+
 
     # Routes
     app.router.add_get('/', index)
