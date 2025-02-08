@@ -42,7 +42,8 @@ def calculate_frame_rate(frame_queue: FrameQueue) -> float:
         return round((len(timestamps) - 1) / (timestamps[-1] - timestamps[0]), 1)
     return 0.0
 
-def process_frame_canvas(frame_queues: VideoFrames, model: any) -> np.ndarray:
+
+def process_frame_canvas(frame_queues: VideoFrames, model: any, device: str) -> np.ndarray:
     """Create a canvas with video frames arranged in a grid."""
     num_clients = len(frame_queues)
     if num_clients == 0:
@@ -58,18 +59,37 @@ def process_frame_canvas(frame_queues: VideoFrames, model: any) -> np.ndarray:
 
         compressed_frame, _ = frame_queue[-1]  # Use the latest frame
         frame_array = np.frombuffer(compressed_frame, dtype=np.uint8)
-        frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
+        frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)  # This gives a BGR image
 
-        results = model(frame)
-        boxes = results[0].boxes.xywh.cpu()
+        # Resize the frame to 640x640 for YOLO
+        frame_resized = cv2.resize(frame, (640, 640))  # Resize to match YOLO input size
+
+        # Convert to RGB
+        frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)  # Convert to RGB for YOLO
+
+        # Normalize to [0.0, 1.0] by dividing by 255
+        frame_rgb_normalized = frame_rgb / 255.0  # Normalizing the frame
+
+        # Convert to tensor
+        frame_tensor = torch.tensor(frame_rgb_normalized).float()  # Convert to float32
+        frame_tensor = frame_tensor.permute(2, 0, 1)  # Convert from HWC to CHW
+        frame_tensor = frame_tensor.unsqueeze(0).to(device)  # Add batch dimension and move to device
+
+        # Run YOLO model on the frame
+        results = model(frame_tensor)
         annotated_frame = results[0].plot()
+        annotated_frame_bgr = cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR)
 
+        # Resize the annotated frame back to fit the grid
+        annotated_frame_resized = cv2.resize(annotated_frame_bgr, (FRAME_WIDTH, FRAME_HEIGHT))  # Resize for canvas
+
+        # Get the offsets for placing the frame on the canvas
         x_offset, y_offset = get_offsets(i, cols)
-        canvas[y_offset:y_offset + FRAME_HEIGHT, x_offset:x_offset + FRAME_WIDTH] = annotated_frame
+        canvas[y_offset:y_offset + FRAME_HEIGHT, x_offset:x_offset + FRAME_WIDTH] = annotated_frame_resized
 
     return canvas
 
-# WebSocket Handlers
+
 async def handle_text_message(msg: WSMessage, request: web.Request, ws: web.WebSocketResponse) -> None:
     """Handle text messages from WebSocket."""
     if msg.data == 'close':
@@ -93,7 +113,6 @@ async def handle_binary_message(msg: WSMessage, client_ip: str, request: web.Req
     else:
         frame_queue = request.app['video_frames'].setdefault(client_ip, {"frames": deque(maxlen=10), "fps": 0.0, "frame_count": 0})
 
-
     # Get the current timestamp
     timestamp = time()
 
@@ -116,7 +135,6 @@ async def handle_binary_message(msg: WSMessage, client_ip: str, request: web.Req
         command = request.app['control_commands'][client_ip]
         await ws.send_str(f"CONTROL:{command[0]}:{command[1]}")
 
-# HTTP Handlers
 async def index(request: web.Request) -> web.Response:
     """Serve the index HTML page."""
     return web.Response(text=open('index.html').read(), content_type='text/html')
@@ -141,25 +159,14 @@ async def generate_frames(request: web.Request) -> Generator[bytes, None, None]:
     """Generate video frames for streaming."""
     shutdown_event: asyncio.Event = request.app['shutdown_event']
     model = request.app['model']  # Direct reference to the model
+    device = request.app['device']  # Use the device for inference (GPU/CPU)
+
     while not shutdown_event.is_set():
         async with request.app['frame_lock']:
             frame_queues = request.app['video_frames']
 
         # Directly use the model on the frame (ensure the frame is a tensor)
-        canvas = process_frame_canvas(frame_queues, model)
-        _, jpeg_frame = cv2.imencode('.jpg', canvas)
-        yield jpeg_frame.tobytes()
-        await asyncio.sleep(FRAME_RATE)
-
-async def old_generate_frames(request: web.Request, pool: ProcessPoolExecutor) -> Generator[bytes, None, None]:
-    """Generate video frames for streaming."""
-    shutdown_event: asyncio.Event = request.app['shutdown_event']
-    while not shutdown_event.is_set():
-        async with request.app['frame_lock']:
-            frame_queues = request.app['video_frames']
-            model = request.app['model']
-
-        canvas = await asyncio.get_event_loop().run_in_executor(pool, process_frame_canvas, frame_queues, model)
+        canvas = process_frame_canvas(frame_queues, model, device)
         _, jpeg_frame = cv2.imencode('.jpg', canvas)
         yield jpeg_frame.tobytes()
         await asyncio.sleep(FRAME_RATE)
@@ -175,7 +182,6 @@ async def stream_video(request: web.Request) -> web.StreamResponse:
     )
     await response.prepare(request)
 
-    # pool: ProcessPoolExecutor = request.app['process_pool']
     async for frame in generate_frames(request):
         await response.write(
             b'--frame\r\n'
@@ -194,7 +200,7 @@ async def cleanup(app: web.Application) -> None:
 def main() -> None:
     logging.basicConfig(level=logging.DEBUG)
     app = web.Application()
-    device = "cuda" if torch.cuda.is_available() else "cpu" # Select GPU if available
+    device = "cuda" if torch.cuda.is_available() else "cpu"  # Select GPU if available
 
     # Shared state
     app['video_frames']: VideoFrames = {}
@@ -202,8 +208,8 @@ def main() -> None:
     app['frame_lock'] = asyncio.Lock()
     app['shutdown_event'] = asyncio.Event()
     app['process_pool'] = ProcessPoolExecutor(max_workers=4)
-    app['model'] = YOLO("yolov8n.pt").to(device) # Load YOLOv8n model (no FP16 precision)
-
+    app['model'] = YOLO("yolov8n.pt").to(device)  # Load YOLOv8n model (no FP16 precision)
+    app['device'] = device  # Store the device (CPU/GPU) for inference
 
     # Routes
     app.router.add_get('/', index)
@@ -218,3 +224,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
