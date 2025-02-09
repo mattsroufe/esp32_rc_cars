@@ -33,11 +33,11 @@ This project demonstrates an ESP32-based remote-controlled camera system capable
 
 I bought everything for this kit from aliexpress:
 
-- Car chassis: https://www.aliexpress.com/item/32830665408.html
-- Electronic speed control: https://www.aliexpress.com/item/1005007716682815.html
+- Car chassis: https://s.click.aliexpress.com/e/_opUxSdp
+- Electronic speed control: https://s.click.aliexpress.com/e/_oF12WIj
   I used the 30 amp version because it had a better BEC output - 5v at 3 amps. Seems to be plenty of current to power
   both the esc and servo.
-- Battery holder: https://www.aliexpress.com/item/1005006283625827.html
+- Battery holder: https://s.click.aliexpress.com/e/_onDYLjZ
 - 2 18650 3.6v cells or 7.4v battery pack (I have used both, cells are more flexible for other projects)
 - ESP32-CAM: https://www.aliexpress.com/item/1005001468076374.html (Very important to get one with external antenna and
   and I used the 170 degree fisheye camera)
