@@ -81,12 +81,12 @@ pip3 install aiohttp opencv-python numpy
 
 ### ESP32 Firmware
 
-1. Modify the `secrets.h` file to include your Wi-Fi credentials and WebSocket server URL:
+1. Rename `secrets_config.h` file to `secrets.h` and include your Wi-Fi credentials and WebSocket server URL:
 
 ```cpp
 #define WIFI_SSID "YourWiFiSSID"
 #define WIFI_PASSWORD "YourWiFiPassword"
-#define WS_SERVER_URL "ws://YourServerIP:Port"
+#define WS_SERVER_URL "ws://YourServerIP:Port/ws"
 ```
 
 2. Ensure the GPIO pins for the camera module, motor, and servo match your hardware setup:

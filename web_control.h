@@ -76,11 +76,13 @@ void onEventsCallback(WebsocketsEvent event, String data)
 {
     if (event == WebsocketsEvent::ConnectionOpened)
     {
-        Serial.println("Connnection Opened");
+        Serial.println("Connection Opened");
     }
     else if (event == WebsocketsEvent::ConnectionClosed)
     {
-        Serial.println("Connnection Closed");
+        Serial.println("Connection Closed");
+        Serial.print("Reason: ");
+        Serial.println(data);
     }
     else if (event == WebsocketsEvent::GotPing)
     {
@@ -146,16 +148,38 @@ esp_err_t init_wifi()
     }
     Serial.println("");
     Serial.println("WiFi OK");
-    Serial.println("connecting to WS: ");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+    
+    Serial.println("Connecting to WebSocket server...");
+    Serial.print("WebSocket URL: ");
+    Serial.println(WS_SERVER_URL);
+    
     client.onMessage(onMessageCallback);
     client.onEvent(onEventsCallback);
-    while (!client.connect(WS_SERVER_URL))
+    
+    // Add connection timeout
+    unsigned long startAttemptTime = millis();
+    const unsigned long CONNECTION_TIMEOUT = 10000; // 10 seconds timeout
+    
+    bool connected = false;
+    while (!connected && (millis() - startAttemptTime < CONNECTION_TIMEOUT))
     {
-        delay(500);
-        Serial.print(".");
+        connected = client.connect(WS_SERVER_URL);
+        if (!connected)
+        {
+            Serial.print(".");
+            delay(500);
+        }
     }
-    Serial.println("WS OK");
-    // client.send("hello from ESP32 camera stream!");
+    
+    if (!connected)
+    {
+        Serial.println("\nWebSocket connection timeout!");
+        return ESP_FAIL;
+    }
+    
+    Serial.println("\nWebSocket connection successful!");
     return ESP_OK;
 };
 
@@ -180,24 +204,36 @@ void setup()
 
 void loop()
 {
+    if (!client.available())
+    {
+        Serial.println("WebSocket connection lost. Attempting to reconnect...");
+        if (!client.connect(WS_SERVER_URL))
+        {
+            Serial.println("Reconnection failed!");
+            delay(5000); // Wait 5 seconds before next attempt
+            return;
+        }
+        Serial.println("Reconnected successfully!");
+    }
+
     if (millis() - COMMAND_TIMEOUT >= lastCommandTime)
     {
-        esc.control(0); // Start motor at 0 speed
+        esc.control(0);
         steeringServo.control(90);
-        // Serial.println("Throttle reset to 0 due to timeout.");
     }
 
-    if (client.available())
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb)
     {
-        camera_fb_t *fb = esp_camera_fb_get();
-
-        if (!fb)
-            return;
-
-        client.sendBinary((const char *)fb->buf, fb->len);
-
-        esp_camera_fb_return(fb);
-
-        client.poll();
+        Serial.println("Camera capture failed");
+        return;
     }
+
+    if (!client.sendBinary((const char *)fb->buf, fb->len))
+    {
+        Serial.println("Failed to send frame");
+    }
+
+    esp_camera_fb_return(fb);
+    client.poll();
 }
