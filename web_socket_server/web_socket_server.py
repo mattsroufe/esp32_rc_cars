@@ -116,19 +116,30 @@ async def index(request: web.Request) -> web.Response:
 
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     """Handle WebSocket connections."""
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
-    client_ip = request.remote or "unknown"
+    logging.info(f"New WebSocket connection attempt from {request.remote}")
+    logging.debug(f"Request headers: {request.headers}")
+    
+    try:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        client_ip = request.remote or "unknown"
+        logging.info(f"WebSocket connection established with {client_ip}")
 
-    async for msg in ws:
-        if msg.type == aiohttp.WSMsgType.TEXT:
-            await handle_text_message(msg, request, ws)
-        elif msg.type == aiohttp.WSMsgType.BINARY:
-            await handle_binary_message(msg, client_ip, request, ws)
-        elif msg.type == aiohttp.WSMsgType.ERROR:
-            logging.error(f"WebSocket error: {ws.exception()}")
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                await handle_text_message(msg, request, ws)
+            elif msg.type == aiohttp.WSMsgType.BINARY:
+                await handle_binary_message(msg, client_ip, request, ws)
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                logging.error(f"WebSocket error: {ws.exception()}")
+            elif msg.type == aiohttp.WSMsgType.CLOSED:
+                logging.info(f"WebSocket connection closed with {client_ip}")
+                break
 
-    return ws
+        return ws
+    except Exception as e:
+        logging.error(f"Error in websocket_handler: {str(e)}")
+        raise
 
 async def generate_frames(request: web.Request, pool: ProcessPoolExecutor) -> Generator[bytes, None, None]:
     """Generate video frames for streaming."""
