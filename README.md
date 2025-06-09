@@ -72,7 +72,7 @@ ___
 Install the following Python libraries:
 
 ```bash
-pip3 install aiohttp opencv-python numpy
+sudo apt install python3-aiohttp python3-opencv python3-numpy
 ```
 
 ---
