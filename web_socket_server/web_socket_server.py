@@ -100,8 +100,11 @@ async def handle_binary_message(msg: WSMessage, client_ip: str, request: web.Req
     frame_queue["fps"] = calculate_frame_rate(frame_queue["frames"])
     frame_queue["frame_count"] = len(frame_queue["frames"])
 
+    logging.debug(f"Received frame from {client_ip}: count={frame_queue['frame_count']}, fps={frame_queue['fps']}")
+
     if client_ip in request.app['control_commands']:
         command = request.app['control_commands'][client_ip]
+        logging.debug(f"Sending control command to {client_ip}: {command}")
         await ws.send_str(f"CONTROL:{command[0]}:{command[1]}")
 
 # HTTP Handlers
@@ -113,6 +116,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     client_ip = request.remote or "unknown"
+    logging.info(f"Client connected: {client_ip}")
 
     async for msg in ws:
         match msg.type:
@@ -121,8 +125,9 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             case aiohttp.WSMsgType.BINARY:
                 await handle_binary_message(msg, client_ip, request, ws)
             case aiohttp.WSMsgType.ERROR:
-                logging.error(f"WebSocket error: {ws.exception()}")
+                logging.error(f"WebSocket error from {client_ip}: {ws.exception()}")
 
+    logging.info(f"Client disconnected: {client_ip}")
     return ws
 
 async def generate_frames(request: web.Request, pool: ProcessPoolExecutor) -> Generator[bytes, None, None]:
