@@ -3,7 +3,7 @@
 SteeringServo::SteeringServo(int pin, int minAngle, int maxAngle, int deadZone)
     : _pin(pin), _minAngle(minAngle), _maxAngle(maxAngle), _deadZone(deadZone) {
     _servo.attach(_pin);
-    _servo.write(_centerPos); // Set to center at startup
+    _servo.write(_centerPos);
 }
 
 int SteeringServo::mapSteering(int input) {
