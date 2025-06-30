@@ -3,7 +3,7 @@ import asyncio
 import json
 import signal
 from typing import Dict, Deque, Tuple, Any, Generator, TypedDict
-from aiohttp import web, WSCloseCode, WSMessage
+from aiohttp import web, WSMessage
 import aiohttp
 import cv2
 import numpy as np
@@ -81,7 +81,7 @@ async def handle_text_message(msg: WSMessage, request: web.Request, ws: web.WebS
     try:
         data = json.loads(msg.data)
     except json.JSONDecodeError:
-        logging.warning("Invalid JSON received")
+        logging.warning("[WebSocket] Invalid JSON received")
         return
 
     if msg.data == 'close':
@@ -107,12 +107,15 @@ async def handle_binary_message(msg: WSMessage, client_ip: str, request: web.Req
     frame_queue["fps"] = calculate_frame_rate(frame_queue["frames"])
     frame_queue["frame_count"] = len(frame_queue["frames"])
 
-    logging.debug(f"[{client_ip}] Frame received: count={frame_queue['frame_count']}, fps={frame_queue['fps']}")
+    logging.debug(f"[WebSocket][{client_ip}] Frame received: count={frame_queue['frame_count']}, fps={frame_queue['fps']}")
 
     if client_ip in request.app['control_commands']:
         command = request.app['control_commands'][client_ip]
-        logging.debug(f"[{client_ip}] Sending control command: {command}")
-        await ws.send_str(f"CONTROL:{command[0]}:{command[1]}")
+        logging.debug(f"[WebSocket][{client_ip}] Sending control command: {command}")
+        try:
+            await ws.send_str(f"CONTROL:{command[0]}:{command[1]}")
+        except ConnectionResetError:
+            logging.info(f"[WebSocket][{client_ip}] Connection reset on send")
 
 # HTTP Handlers
 async def index(request: web.Request) -> web.Response:
@@ -120,35 +123,34 @@ async def index(request: web.Request) -> web.Response:
         html = Path('index.html').read_text()
         return web.Response(text=html, content_type='text/html')
     except FileNotFoundError:
-        logging.error("index.html not found")
+        logging.error("[HTTP] index.html not found")
         return web.Response(status=404, text="Index file not found.")
 
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     client_ip = request.remote or "unknown"
-    logging.info(f"Client connected: {client_ip}")
+    logging.info(f"[WebSocket] Client connected: {client_ip}")
 
     shutdown_event: asyncio.Event = request.app['shutdown_event']
 
     try:
         while not ws.closed and not shutdown_event.is_set():
             try:
-                msg = await ws.receive(timeout=1.0) # timeout to check for shutdown
+                msg = await ws.receive(timeout=1.0)
             except asyncio.TimeoutError:
-                continue # Just wait again, not an error
+                continue
+
             if msg.type == aiohttp.WSMsgType.TEXT:
                 await handle_text_message(msg, request, ws)
             elif msg.type == aiohttp.WSMsgType.BINARY:
                 await handle_binary_message(msg, client_ip, request, ws)
             elif msg.type == aiohttp.WSMsgType.ERROR:
-                logging.error(f"WebSocket error from {client_ip}: {ws.exception()}")
-    except asyncio.TimeoutError:
-        pass # Loop back and check again
+                logging.error(f"[WebSocket][{client_ip}] Error: {ws.exception()}")
     except Exception as e:
-        logging.error(f"Websocket failure: {e}")
+        logging.error(f"[WebSocket][{client_ip}] Exception: {e}")
     finally:
-        logging.info(f"Client disconnected: {client_ip}")
+        logging.info(f"[WebSocket] Client disconnected: {client_ip}")
         await ws.close()
     return ws
 
@@ -163,7 +165,7 @@ async def generate_frames(request: web.Request, pool: ProcessPoolExecutor) -> Ge
             jpeg_frame = await asyncio.to_thread(encode_frame_to_jpeg, canvas)
             yield jpeg_frame
         except Exception as e:
-            logging.error(f"Frame generation error: {e}")
+            logging.error(f"[Stream] Frame generation error: {e}")
         await asyncio.sleep(FRAME_RATE)
 
 async def stream_video(request: web.Request) -> web.StreamResponse:
@@ -182,44 +184,46 @@ async def stream_video(request: web.Request) -> web.StreamResponse:
     try:
         async for frame in generate_frames(request, pool):
             if shutdown_event.is_set():
-                break # stop sending frames when shutting down
+                break
             await response.write(
                 b'--frame\r\n'
                 b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
             )
     except (asyncio.CancelledError, ConnectionResetError, RuntimeError) as e:
-        logging.info(f"Stream closed by client: {e}")
+        logging.info(f"[Stream] Client closed: {e}")
     except Exception as e:
-        logging.info(f"Unexpected stream error: {e}")
+        logging.error(f"[Stream] Unexpected error: {e}")
     finally:
         try:
             await response.write_eof()
         except ConnectionResetError:
-            pass # Browser already gone
-        logging.info("Video stream closed")
+            pass
+        logging.info("[Stream] Video stream closed")
     return response
 
-# Graceful Shutdown
+# Health Check
+async def health_check(request: web.Request) -> web.Response:
+    return web.Response(text="OK")
+
+# Cleanup & Shutdown
 async def cleanup(app: web.Application) -> None:
-    logging.info("Shutting down thread pool and event loop...")
+    logging.info("[Shutdown] Cleaning up resources...")
     app['shutdown_event'].set()
     app['process_pool'].shutdown()
 
 async def shutdown(app: web.Application):
-    logging.info("Signal received: shutting down...")
+    logging.info("[Shutdown] Triggered")
     await cleanup(app)
     await app.shutdown()
     await app.cleanup()
 
-async def setup_signal_handlers(app: web.Application):
-    loop = asyncio.get_running_loop()
+def setup_signal_handlers(app: web.Application, loop: asyncio.AbstractEventLoop):
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(app)))
 
 # App Factory
 def create_app() -> web.Application:
     app = web.Application()
-
     app['video_frames']: VideoFrames = {}
     app['control_commands']: ControlCommands = {}
     app['frame_lock'] = asyncio.Lock()
@@ -229,16 +233,37 @@ def create_app() -> web.Application:
     app.router.add_get('/', index)
     app.router.add_get('/video', stream_video)
     app.router.add_get('/ws', websocket_handler)
+    app.router.add_get('/health', health_check)
     app.router.add_static('/static', path='./static', name='static')
 
-    app.on_shutdown.append(cleanup)
     return app
 
-# Main Function
-def main() -> None:
+# Main Function with Manual Event Loop
+def main():
     logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
     app = create_app()
-    web.run_app(app, host='0.0.0.0', port=8080)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    runner = web.AppRunner(app)
+
+    async def start():
+        await runner.setup()
+        site = web.TCPSite(runner, host='0.0.0.0', port=8080)
+        await site.start()
+        setup_signal_handlers(app, loop)
+        logging.info("🚀 Server started at http://0.0.0.0:8080")
+
+    try:
+        loop.run_until_complete(start())
+        loop.run_forever()
+    except KeyboardInterrupt:
+        logging.info("🛑 KeyboardInterrupt received")
+    finally:
+        loop.run_until_complete(shutdown(app))
+        loop.run_until_complete(runner.cleanup())
+        loop.close()
+        logging.info("✅ Server shut down cleanly")
 
 if __name__ == "__main__":
     main()
