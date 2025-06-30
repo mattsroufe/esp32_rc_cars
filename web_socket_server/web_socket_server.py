@@ -129,16 +129,27 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     client_ip = request.remote or "unknown"
     logging.info(f"Client connected: {client_ip}")
 
-    async for msg in ws:
-        if msg.type == aiohttp.WSMsgType.TEXT:
-            await handle_text_message(msg, request, ws)
-        elif msg.type == aiohttp.WSMsgType.BINARY:
-            await handle_binary_message(msg, client_ip, request, ws)
-        elif msg.type == aiohttp.WSMsgType.ERROR:
-            logging.error(f"WebSocket error from {client_ip}: {ws.exception()}")
-        await asyncio.sleep(0.001)
+    shutdown_event: asyncio.Event = request.app['shutdown_event']
 
-    logging.info(f"Client disconnected: {client_ip}")
+    try:
+        while not ws.closed and not shutdown_event.is_set():
+            try:
+                msg = await ws.receive(timeout=1.0) # timeout to check for shutdown
+            except asyncio.TimeoutError:
+                continue # Just wait again, not an error
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                await handle_text_message(msg, request, ws)
+            elif msg.type == aiohttp.WSMsgType.BINARY:
+                await handle_binary_message(msg, client_ip, request, ws)
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                logging.error(f"WebSocket error from {client_ip}: {ws.exception()}")
+    except asyncio.TimeoutError:
+        pass # Loop back and check again
+    except Exception as e:
+        logging.error(f"Websocket failure: {e}")
+    finally:
+        logging.info(f"Client disconnected: {client_ip}")
+        await ws.close()
     return ws
 
 async def generate_frames(request: web.Request, pool: ProcessPoolExecutor) -> Generator[bytes, None, None]:
@@ -166,11 +177,26 @@ async def stream_video(request: web.Request) -> web.StreamResponse:
     await response.prepare(request)
 
     pool: ProcessPoolExecutor = request.app['process_pool']
-    async for frame in generate_frames(request, pool):
-        await response.write(
-            b'--frame\r\n'
-            b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
-        )
+    shutdown_event: asyncio.Event = request.app['shutdown_event']
+
+    try:
+        async for frame in generate_frames(request, pool):
+            if shutdown_event.is_set():
+                break # stop sending frames when shutting down
+            await response.write(
+                b'--frame\r\n'
+                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
+            )
+    except (asyncio.CancelledError, ConnectionResetError, RuntimeError) as e:
+        logging.info(f"Stream closed by client: {e}")
+    except Exception as e:
+        logging.info(f"Unexpected stream error: {e}")
+    finally:
+        try:
+            await response.write_eof()
+        except ConnectionResetError:
+            pass # Browser already gone
+        logging.info("Video stream closed")
     return response
 
 # Graceful Shutdown
