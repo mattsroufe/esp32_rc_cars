@@ -1,7 +1,8 @@
 import logging
 import asyncio
 import json
-from typing import Dict, Deque, Tuple, Any, Generator
+import signal
+from typing import Dict, Deque, Tuple, Any, Generator, TypedDict
 from aiohttp import web, WSCloseCode, WSMessage
 import aiohttp
 import cv2
@@ -12,13 +13,19 @@ from concurrent.futures import ProcessPoolExecutor
 from time import time
 
 # Constants
-FRAME_WIDTH: int = 320
-FRAME_HEIGHT: int = 240
-FRAME_RATE: float = 1 / 30
+FRAME_WIDTH = 320
+FRAME_HEIGHT = 240
+FRAME_RATE = 1 / 30
+MAX_FRAMES_PER_CLIENT = 10
 
 # Type Aliases
 FrameQueue = Deque[Tuple[bytes, float]]
-ClientData = Dict[str, Any]
+
+class ClientData(TypedDict):
+    frames: FrameQueue
+    fps: float
+    frame_count: int
+
 VideoFrames = Dict[str, ClientData]
 ControlCommands = Dict[str, Tuple[float, float]]
 
@@ -61,7 +68,7 @@ def process_frame_canvas(frame_queues: VideoFrames) -> np.ndarray:
         compressed_frame, _ = frame_queue[-1]
         frame_array = np.frombuffer(compressed_frame, dtype=np.uint8)
         frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
-        if frame is None:
+        if frame is None or frame.shape[:2] != (FRAME_HEIGHT, FRAME_WIDTH):
             continue
 
         x_offset, y_offset = get_offsets(i, cols)
@@ -92,7 +99,7 @@ async def handle_text_message(msg: WSMessage, request: web.Request, ws: web.WebS
 
 async def handle_binary_message(msg: WSMessage, client_ip: str, request: web.Request, ws: web.WebSocketResponse) -> None:
     frame_queue = request.app['video_frames'].setdefault(
-        client_ip, {"frames": deque(maxlen=10), "fps": 0.0, "frame_count": 0}
+        client_ip, {"frames": deque(maxlen=MAX_FRAMES_PER_CLIENT), "fps": 0.0, "frame_count": 0}
     )
 
     timestamp = time()
@@ -100,17 +107,21 @@ async def handle_binary_message(msg: WSMessage, client_ip: str, request: web.Req
     frame_queue["fps"] = calculate_frame_rate(frame_queue["frames"])
     frame_queue["frame_count"] = len(frame_queue["frames"])
 
-    logging.debug(f"Received frame from {client_ip}: count={frame_queue['frame_count']}, fps={frame_queue['fps']}")
+    logging.debug(f"[{client_ip}] Frame received: count={frame_queue['frame_count']}, fps={frame_queue['fps']}")
 
     if client_ip in request.app['control_commands']:
         command = request.app['control_commands'][client_ip]
-        logging.debug(f"Sending control command to {client_ip}: {command}")
+        logging.debug(f"[{client_ip}] Sending control command: {command}")
         await ws.send_str(f"CONTROL:{command[0]}:{command[1]}")
 
 # HTTP Handlers
 async def index(request: web.Request) -> web.Response:
-    html = Path('index.html').read_text()
-    return web.Response(text=html, content_type='text/html')
+    try:
+        html = Path('index.html').read_text()
+        return web.Response(text=html, content_type='text/html')
+    except FileNotFoundError:
+        logging.error("index.html not found")
+        return web.Response(status=404, text="Index file not found.")
 
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
@@ -119,13 +130,13 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     logging.info(f"Client connected: {client_ip}")
 
     async for msg in ws:
-        match msg.type:
-            case aiohttp.WSMsgType.TEXT:
-                await handle_text_message(msg, request, ws)
-            case aiohttp.WSMsgType.BINARY:
-                await handle_binary_message(msg, client_ip, request, ws)
-            case aiohttp.WSMsgType.ERROR:
-                logging.error(f"WebSocket error from {client_ip}: {ws.exception()}")
+        if msg.type == aiohttp.WSMsgType.TEXT:
+            await handle_text_message(msg, request, ws)
+        elif msg.type == aiohttp.WSMsgType.BINARY:
+            await handle_binary_message(msg, client_ip, request, ws)
+        elif msg.type == aiohttp.WSMsgType.ERROR:
+            logging.error(f"WebSocket error from {client_ip}: {ws.exception()}")
+        await asyncio.sleep(0.001)
 
     logging.info(f"Client disconnected: {client_ip}")
     return ws
@@ -136,9 +147,12 @@ async def generate_frames(request: web.Request, pool: ProcessPoolExecutor) -> Ge
         async with request.app['frame_lock']:
             frame_queues = request.app['video_frames']
 
-        canvas = await asyncio.get_event_loop().run_in_executor(pool, process_frame_canvas, frame_queues)
-        jpeg_frame = await asyncio.get_event_loop().run_in_executor(pool, encode_frame_to_jpeg, canvas)
-        yield jpeg_frame
+        try:
+            canvas = await asyncio.to_thread(process_frame_canvas, frame_queues)
+            jpeg_frame = await asyncio.to_thread(encode_frame_to_jpeg, canvas)
+            yield jpeg_frame
+        except Exception as e:
+            logging.error(f"Frame generation error: {e}")
         await asyncio.sleep(FRAME_RATE)
 
 async def stream_video(request: web.Request) -> web.StreamResponse:
@@ -159,15 +173,25 @@ async def stream_video(request: web.Request) -> web.StreamResponse:
         )
     return response
 
-# Cleanup Function
+# Graceful Shutdown
 async def cleanup(app: web.Application) -> None:
     logging.info("Shutting down thread pool and event loop...")
     app['shutdown_event'].set()
     app['process_pool'].shutdown()
 
-# Main Function
-def main() -> None:
-    logging.basicConfig(level=logging.DEBUG)
+async def shutdown(app: web.Application):
+    logging.info("Signal received: shutting down...")
+    await cleanup(app)
+    await app.shutdown()
+    await app.cleanup()
+
+async def setup_signal_handlers(app: web.Application):
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(app)))
+
+# App Factory
+def create_app() -> web.Application:
     app = web.Application()
 
     app['video_frames']: VideoFrames = {}
@@ -182,6 +206,12 @@ def main() -> None:
     app.router.add_static('/static', path='./static', name='static')
 
     app.on_shutdown.append(cleanup)
+    return app
+
+# Main Function
+def main() -> None:
+    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
+    app = create_app()
     web.run_app(app, host='0.0.0.0', port=8080)
 
 if __name__ == "__main__":
