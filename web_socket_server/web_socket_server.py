@@ -93,44 +93,59 @@ async def handle_binary_message(msg: WSMessage, client_ip: str, request: web.Req
 
 # HTTP Handlers
 async def index(request: web.Request) -> web.Response:
-    return web.Response(text=request.app['index_html'], content_type='text/html')
+    return web.Response(
+        text="<html><body><h1>ESP32-CAM Stream</h1><img src='/video'></body></html>",
+        content_type="text/html"
+    )
 
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
-    client_ip = request.remote or "unknown"
-    logging.info(f"Client connected: {client_ip}")
 
-    try:
-        async for msg in ws:
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                await handle_text_message(msg, request, ws)
-            elif msg.type == aiohttp.WSMsgType.BINARY:
-                await handle_binary_message(msg, client_ip, request, ws)
-            elif msg.type == aiohttp.WSMsgType.ERROR:
-                logging.error(f"WebSocket error: {ws.exception()}")
-    finally:
-        logging.info(f"Client disconnected: {client_ip}")
+    async for msg in ws:
+        if msg.type == WSMsgType.TEXT:
+            logging.info(f"Received via WS: {msg.data}")
+            await ws.send_str(f"Echo: {msg.data}")
+        elif msg.type == WSMsgType.ERROR:
+            logging.error(f"WebSocket error: {ws.exception()}")
 
     return ws
 
-async def generate_frames(request: web.Request, pool: ThreadPoolExecutor) -> Generator[bytes, None, None]:
-    shutdown_event: asyncio.Event = request.app['shutdown_event']
-    loop = asyncio.get_event_loop()
+def generate_frames(shutdown_event: asyncio.Event):
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        logging.error("Could not open video device")
+        return
 
-    while not shutdown_event.is_set():
-        async with request.app['frame_lock']:
-            frame_queues = dict(request.app['video_frames'])  # shallow copy
+    try:
+        while not shutdown_event.is_set():
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            _, buffer = cv2.imencode('.jpg', frame)
+            yield buffer.tobytes()
+    finally:
+        cap.release()
 
-        try:
-            canvas = await loop.run_in_executor(pool, process_frame_canvas, frame_queues)
-            _, jpeg_frame = cv2.imencode('.jpg', canvas)
-            yield jpeg_frame.tobytes()
-        except Exception as e:
-            logging.exception("Error generating frame: %s", e)
-            continue
+async def video_feed(request: web.Request) -> web.StreamResponse:
+    response = web.StreamResponse(
+        status=200,
+        reason="OK",
+        headers={
+            "Content-Type": "multipart/x-mixed-replace; boundary=frame"
+        },
+    )
+    await response.prepare(request)
 
-        await asyncio.sleep(FRAME_RATE)
+    shutdown_event = request.app['shutdown_event']
+
+    for frame in generate_frames(shutdown_event):
+        await response.write(
+            b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+        )
+        await asyncio.sleep(0.05)  # control frame rate
+
+    return response
 
 async def stream_video(request: web.Request) -> web.StreamResponse:
     response = web.StreamResponse(
@@ -165,6 +180,22 @@ async def cleanup(app: web.Application) -> None:
     app['thread_pool'].shutdown(wait=False, cancel_futures=True)
 
     logging.info("Cleanup finished.")
+
+
+async def init_app() -> web.Application:
+    app = web.Application()
+    app['shutdown_event'] = asyncio.Event()
+    app['thread_pool'] = ThreadPoolExecutor(max_workers=4)
+
+    # Routes
+    app.router.add_get("/", index)
+    app.router.add_get("/video", video_feed)
+    app.router.add_get("/ws", websocket_handler)
+
+    # Cleanup handler
+    app.on_cleanup.append(cleanup)
+
+    return app
 
 # Main Function
 def main() -> None:
