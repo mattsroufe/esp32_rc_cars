@@ -1,27 +1,51 @@
 import asyncio
 from aiohttp import web
-from server import init_app
+from server import index, video_feed, websocket_handler
+from cleanup import cleanup
+from config import HOST, PORT, MAX_THREADS, FRAME_RATE
+from concurrent.futures import ThreadPoolExecutor
+
+async def create_application():
+    app = web.Application()
+    app['shutdown_event'] = asyncio.Event()
+    app['video_frames'] = {}
+    app['control_commands'] = {}
+    app['frame_lock'] = asyncio.Lock()
+    app['thread_pool'] = ThreadPoolExecutor(max_workers=MAX_THREADS)
+    app['frame_rate'] = FRAME_RATE
+
+    # Routes
+    app.router.add_get("/", index)
+    app.router.add_get("/video", video_feed)
+    app.router.add_get("/ws", websocket_handler)
+
+    # Static files
+    app.router.add_static("/static", path="./static", name="static")
+
+    # Cleanup
+    app.on_cleanup.append(cleanup)
+    return app
+
 
 async def main():
-    app = await init_app()
+    app = await create_application()
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    site = web.TCPSite(runner, HOST, PORT)
     await site.start()
+    print(f"Server started at http://{HOST}:{PORT}")
 
-    print("Server started at http://0.0.0.0:8080")
     try:
-        # Keep running until Ctrl+C
         await asyncio.Event().wait()
     except KeyboardInterrupt:
         print("Ctrl+C received, shutting down...")
     except asyncio.exceptions.CancelledError:
-        # Ignore CancelledError during shutdown
         pass
     finally:
         await app.shutdown()
         await app.cleanup()
         await runner.cleanup()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
