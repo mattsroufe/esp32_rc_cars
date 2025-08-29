@@ -1,10 +1,12 @@
 import asyncio
+import cv2
+import numpy as np
 from aiohttp import web
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from video_utils import process_frame_canvas
 from ws_handlers import websocket_handler
 from cleanup import cleanup
-from video_utils import process_frame_canvas
 
 FRAME_RATE = 1 / 30
 
@@ -22,6 +24,7 @@ async def generate_frames(request, pool: ThreadPoolExecutor):
     while not shutdown_event.is_set():
         async with request.app['frame_lock']:
             frame_queues = dict(request.app['video_frames'])
+        # process frame canvas in thread pool
         canvas = await loop.run_in_executor(pool, process_frame_canvas, frame_queues)
         _, jpeg_frame = cv2.imencode('.jpg', canvas)
         yield jpeg_frame.tobytes()
@@ -31,8 +34,10 @@ async def video_feed(request):
     response = web.StreamResponse(
         status=200,
         reason="OK",
-        headers={"Content-Type": "multipart/x-mixed-replace; boundary=frame",
-                 "Cache-Control": "no-cache"}
+        headers={
+            "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+            "Cache-Control": "no-cache"
+        }
     )
     await response.prepare(request)
     pool = request.app['thread_pool']
@@ -48,9 +53,12 @@ async def init_app():
     app['control_commands'] = {}
     app['frame_lock'] = asyncio.Lock()
 
+    # Routes
     app.router.add_get("/", index)
     app.router.add_get("/video", video_feed)
     app.router.add_get("/ws", websocket_handler)
 
+    # Cleanup
     app.on_cleanup.append(cleanup)
+
     return app
