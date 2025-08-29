@@ -4,18 +4,20 @@ import logging
 async def cleanup(app):
     """
     Clean up resources when the server shuts down.
-    Cancels background tasks and shuts down the thread pool.
+    Cancels all running tasks and shuts down the thread pool.
     """
     logging.info("Cleaning up resources...")
 
-    # Cancel all running tasks except the current one
     current_task = asyncio.current_task()
-    for task in asyncio.all_tasks():
-        if task is not current_task:
+    tasks = [t for t in asyncio.all_tasks() if t is not current_task]
+
+    if tasks:
+        logging.info(f"Cancelling {len(tasks)} running tasks...")
+        for task in tasks:
             task.cancel()
 
-    # Wait briefly for tasks to cancel
-    await asyncio.sleep(0.1)
+        # Wait for all tasks to finish/cancel
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     # Shutdown thread pool
     thread_pool = app.get('thread_pool')
