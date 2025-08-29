@@ -1,28 +1,31 @@
 import os
 import asyncio
 import cv2
-import numpy as np
 from aiohttp import web
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
 from pathlib import Path
+
 from video_utils import process_frame_canvas
 from ws_handlers import websocket_handler
 from cleanup import cleanup
 
-FRAME_RATE = 1 / 30
+# Configurable frame rate (frames per second)
+FRAME_RATE_FPS = float(os.getenv("FRAME_RATE", "30"))
+FRAME_RATE = 1.0 / FRAME_RATE_FPS
 
+# Configurable maximum expected clients
 MAX_EXPECTED_CLIENTS = int(os.getenv("MAX_EXPECTED_CLIENTS", "8"))
 MAX_THREADS = max(2, min(MAX_EXPECTED_CLIENTS, cpu_count() * 2))
 
+
 async def index(request):
-    # Serve index.html from the static folder
     index_path = Path(__file__).parent / "static" / "index.html"
     if index_path.exists():
         html_content = index_path.read_text(encoding="utf-8")
         return web.Response(text=html_content, content_type="text/html")
-    else:
-        return web.Response(text="<h1>index.html not found in /static</h1>", content_type="text/html")
+    return web.Response(text="<h1>index.html not found in /static</h1>", content_type="text/html")
+
 
 async def generate_frames(request):
     shutdown_event = request.app['shutdown_event']
@@ -38,6 +41,7 @@ async def generate_frames(request):
         yield jpeg_frame.tobytes()
         await asyncio.sleep(FRAME_RATE)
 
+
 async def video_feed(request):
     response = web.StreamResponse(
         status=200,
@@ -50,7 +54,9 @@ async def video_feed(request):
     await response.prepare(request)
     async for frame in generate_frames(request):
         await response.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
+
     return response
+
 
 async def init_app():
     app = web.Application()
@@ -65,7 +71,7 @@ async def init_app():
     app.router.add_get("/video", video_feed)
     app.router.add_get("/ws", websocket_handler)
 
-    # Serve static folder automatically
+    # Serve static automatically
     static_path = Path(__file__).parent / "static"
     app.router.add_static("/static", path=static_path, name="static")
 
