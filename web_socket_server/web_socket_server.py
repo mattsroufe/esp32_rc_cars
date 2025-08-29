@@ -2,8 +2,7 @@ import logging
 import asyncio
 import json
 from typing import Dict, Deque, Tuple, Any, Generator
-from aiohttp import web, WSMessage
-import aiohttp
+from aiohttp import web, WSMsgType
 import cv2
 import numpy as np
 from collections import deque
@@ -11,17 +10,23 @@ from concurrent.futures import ThreadPoolExecutor
 from time import time
 from pathlib import Path
 
+# -------------------------------
 # Constants
+# -------------------------------
 FRAME_WIDTH: int = 320
 FRAME_HEIGHT: int = 240
-FRAME_RATE: float = 1 / 30
+FRAME_RATE: float = 1 / 30  # 30 FPS
 
+# -------------------------------
 # Type Aliases
+# -------------------------------
 FrameQueue = Deque[Tuple[bytes, float]]
 VideoFrames = Dict[str, Dict[str, Any]]  # {"frames": FrameQueue, "fps": float, "frame_count": int}
 ControlCommands = Dict[str, Tuple[float, float]]
 
+# -------------------------------
 # Utility Functions
+# -------------------------------
 def calculate_grid_dimensions(num_clients: int) -> Tuple[int, int]:
     cols = int(np.ceil(np.sqrt(num_clients)))
     rows = int(np.ceil(num_clients / cols))
@@ -58,8 +63,10 @@ def process_frame_canvas(frame_queues: VideoFrames) -> np.ndarray:
 
     return canvas
 
+# -------------------------------
 # WebSocket Handlers
-async def handle_text_message(msg: WSMessage, request: web.Request, ws: web.WebSocketResponse) -> None:
+# -------------------------------
+async def handle_text_message(msg: WSMsgType, request: web.Request, ws: web.WebSocketResponse) -> None:
     if msg.data == 'close':
         await ws.close()
         return
@@ -76,7 +83,7 @@ async def handle_text_message(msg: WSMessage, request: web.Request, ws: web.WebS
     }
     await ws.send_json(video_info)
 
-async def handle_binary_message(msg: WSMessage, client_ip: str, request: web.Request, ws: web.WebSocketResponse) -> None:
+async def handle_binary_message(msg: WSMsgType, client_ip: str, request: web.Request, ws: web.WebSocketResponse) -> None:
     frame_queue = request.app['video_frames'].setdefault(
         client_ip, {"frames": deque(maxlen=10), "fps": 0.0, "frame_count": 0}
     )
@@ -91,80 +98,76 @@ async def handle_binary_message(msg: WSMessage, client_ip: str, request: web.Req
         command = request.app['control_commands'][client_ip]
         await ws.send_str(f"CONTROL:{command[0]}:{command[1]}")
 
-# HTTP Handlers
-async def index(request: web.Request) -> web.Response:
-    return web.Response(
-        text="<html><body><h1>ESP32-CAM Stream</h1><img src='/video'></body></html>",
-        content_type="text/html"
-    )
-
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
+    client_ip = request.remote or "unknown"
+    logging.info(f"Client connected: {client_ip}")
 
-    async for msg in ws:
-        if msg.type == WSMsgType.TEXT:
-            logging.info(f"Received via WS: {msg.data}")
-            await ws.send_str(f"Echo: {msg.data}")
-        elif msg.type == WSMsgType.ERROR:
-            logging.error(f"WebSocket error: {ws.exception()}")
+    try:
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                await handle_text_message(msg, request, ws)
+            elif msg.type == WSMsgType.BINARY:
+                await handle_binary_message(msg, client_ip, request, ws)
+            elif msg.type == WSMsgType.ERROR:
+                logging.error(f"WebSocket error: {ws.exception()}")
+    finally:
+        logging.info(f"Client disconnected: {client_ip}")
 
     return ws
 
-def generate_frames(shutdown_event: asyncio.Event):
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        logging.error("Could not open video device")
-        return
+# -------------------------------
+# HTTP Handlers
+# -------------------------------
+async def index(request: web.Request) -> web.Response:
+    index_path = Path(__file__).parent / "index.html"
+    if index_path.exists():
+        html_content = index_path.read_text(encoding="utf-8")
+    else:
+        html_content = "<html><body><h1>ESP32-CAM Stream</h1><p>index.html not found</p></body></html>"
 
-    try:
-        while not shutdown_event.is_set():
-            ret, frame = cap.read()
-            if not ret:
-                continue
-            _, buffer = cv2.imencode('.jpg', frame)
-            yield buffer.tobytes()
-    finally:
-        cap.release()
+    return web.Response(text=html_content, content_type="text/html")
+
+async def generate_frames(request: web.Request, pool: ThreadPoolExecutor) -> Generator[bytes, None, None]:
+    shutdown_event: asyncio.Event = request.app['shutdown_event']
+    loop = asyncio.get_event_loop()
+
+    while not shutdown_event.is_set():
+        # Make a snapshot of current frames
+        async with request.app['frame_lock']:
+            frame_queues = dict(request.app['video_frames'])
+
+        # Generate canvas in thread pool
+        canvas = await loop.run_in_executor(pool, process_frame_canvas, frame_queues)
+        _, jpeg_frame = cv2.imencode('.jpg', canvas)
+        yield jpeg_frame.tobytes()
+
+        await asyncio.sleep(FRAME_RATE)
 
 async def video_feed(request: web.Request) -> web.StreamResponse:
     response = web.StreamResponse(
         status=200,
         reason="OK",
         headers={
-            "Content-Type": "multipart/x-mixed-replace; boundary=frame"
+            "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+            "Cache-Control": "no-cache",
         },
     )
     await response.prepare(request)
 
-    shutdown_event = request.app['shutdown_event']
+    pool: ThreadPoolExecutor = request.app['thread_pool']
 
-    for frame in generate_frames(shutdown_event):
+    async for frame in generate_frames(request, pool):
         await response.write(
             b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
         )
-        await asyncio.sleep(0.05)  # control frame rate
 
     return response
 
-async def stream_video(request: web.Request) -> web.StreamResponse:
-    response = web.StreamResponse(
-        status=200,
-        headers={
-            'Content-Type': 'multipart/x-mixed-replace; boundary=frame',
-            'Cache-Control': 'no-cache',
-        }
-    )
-    await response.prepare(request)
-
-    pool: ThreadPoolExecutor = request.app['process_pool']
-    async for frame in generate_frames(request, pool):
-        await response.write(
-            b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
-        )
-    return response
-
-# Cleanup Function
+# -------------------------------
+# Cleanup
+# -------------------------------
 async def cleanup(app: web.Application) -> None:
     logging.info("Shutting down resources...")
 
@@ -176,28 +179,35 @@ async def cleanup(app: web.Application) -> None:
         if task is not asyncio.current_task():
             task.cancel()
 
-    # Shutdown executor quickly
+    # Shutdown executor
     app['thread_pool'].shutdown(wait=False, cancel_futures=True)
 
     logging.info("Cleanup finished.")
 
-
+# -------------------------------
+# App Initialization
+# -------------------------------
 async def init_app() -> web.Application:
     app = web.Application()
     app['shutdown_event'] = asyncio.Event()
     app['thread_pool'] = ThreadPoolExecutor(max_workers=4)
+    app['video_frames']: VideoFrames = {}
+    app['control_commands']: ControlCommands = {}
+    app['frame_lock'] = asyncio.Lock()
 
     # Routes
     app.router.add_get("/", index)
     app.router.add_get("/video", video_feed)
     app.router.add_get("/ws", websocket_handler)
 
-    # Cleanup handler
+    # Cleanup
     app.on_cleanup.append(cleanup)
 
     return app
 
-# Main Function
+# -------------------------------
+# Main
+# -------------------------------
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
 
