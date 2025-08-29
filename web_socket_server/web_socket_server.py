@@ -152,36 +152,44 @@ async def stream_video(request: web.Request) -> web.StreamResponse:
 # Cleanup Function
 async def cleanup(app: web.Application) -> None:
     logging.info("Shutting down resources...")
+
+    # Stop video generators
     app['shutdown_event'].set()
-    # Don't block forever — allow Ctrl+C to exit cleanly
-    app['process_pool'].shutdown(wait=False, cancel_futures=True)
+
+    # Cancel background tasks
+    for task in asyncio.all_tasks():
+        if task is not asyncio.current_task():
+            task.cancel()
+
+    # Shutdown executor quickly
+    app['thread_pool'].shutdown(wait=False, cancel_futures=True)
+
+    logging.info("Cleanup finished.")
 
 # Main Function
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    app = web.Application()
 
-    # Shared state
-    app['video_frames']: VideoFrames = {}
-    app['control_commands']: ControlCommands = {}
-    app['frame_lock'] = asyncio.Lock()
-    app['shutdown_event'] = asyncio.Event()
-    app['process_pool'] = ThreadPoolExecutor(max_workers=4)  # ✅ switched from ProcessPool
+    loop = asyncio.get_event_loop()
+    app = loop.run_until_complete(init_app())
 
-    # Preload index.html once
-    index_path = Path("index.html")
-    app['index_html'] = index_path.read_text(encoding="utf-8") if index_path.exists() else "<h1>No index.html</h1>"
+    runner = web.AppRunner(app)
+    loop.run_until_complete(runner.setup())
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    loop.run_until_complete(site.start())
 
-    # Routes
-    app.router.add_get('/', index)
-    app.router.add_get('/video', stream_video)
-    app.router.add_get('/ws', websocket_handler)
-    app.router.add_static('/static', path='./static', name='static')
+    logging.info("Server started at http://0.0.0.0:8080")
 
-    app.on_shutdown.append(cleanup)
+    try:
+        loop.run_forever()
+    except KeyboardInterrupt:
+        logging.info("Ctrl+C received, shutting down...")
+    finally:
+        loop.run_until_complete(app.shutdown())
+        loop.run_until_complete(app.cleanup())
+        loop.run_until_complete(runner.cleanup())
+        loop.close()
 
-    # ✅ handle_signals makes Ctrl+C work cleanly on Linux
-    web.run_app(app, host='0.0.0.0', port=8080, handle_signals=True)
 
 if __name__ == "__main__":
     main()
