@@ -1,14 +1,20 @@
+import os
 import asyncio
 import cv2
 import numpy as np
 from aiohttp import web
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import cpu_count
+from pathlib import Path
 from video_utils import process_frame_canvas
 from ws_handlers import websocket_handler
 from cleanup import cleanup
 
 FRAME_RATE = 1 / 30
+
+# Read max expected clients from environment variable, default to 8
+MAX_EXPECTED_CLIENTS = int(os.getenv("MAX_EXPECTED_CLIENTS", "8"))
+MAX_THREADS = max(2, min(MAX_EXPECTED_CLIENTS, cpu_count() * 2))
 
 async def index(request):
     index_path = Path(__file__).parent / "index.html"
@@ -18,13 +24,15 @@ async def index(request):
         html_content = "<html><body><h1>ESP32-CAM Stream</h1><p>index.html not found</p></body></html>"
     return web.Response(text=html_content, content_type="text/html")
 
-async def generate_frames(request, pool: ThreadPoolExecutor):
+async def generate_frames(request):
     shutdown_event = request.app['shutdown_event']
     loop = asyncio.get_event_loop()
+    pool: ThreadPoolExecutor = request.app['thread_pool']
+
     while not shutdown_event.is_set():
         async with request.app['frame_lock']:
             frame_queues = dict(request.app['video_frames'])
-        # process frame canvas in thread pool
+
         canvas = await loop.run_in_executor(pool, process_frame_canvas, frame_queues)
         _, jpeg_frame = cv2.imencode('.jpg', canvas)
         yield jpeg_frame.tobytes()
@@ -40,25 +48,22 @@ async def video_feed(request):
         }
     )
     await response.prepare(request)
-    pool = request.app['thread_pool']
-    async for frame in generate_frames(request, pool):
+    async for frame in generate_frames(request):
         await response.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
     return response
 
 async def init_app():
     app = web.Application()
     app['shutdown_event'] = asyncio.Event()
-    app['thread_pool'] = ThreadPoolExecutor(max_workers=4)
     app['video_frames'] = {}
     app['control_commands'] = {}
     app['frame_lock'] = asyncio.Lock()
+    app['thread_pool'] = ThreadPoolExecutor(max_workers=MAX_THREADS)
 
-    # Routes
     app.router.add_get("/", index)
     app.router.add_get("/video", video_feed)
     app.router.add_get("/ws", websocket_handler)
 
-    # Cleanup
     app.on_cleanup.append(cleanup)
 
     return app
