@@ -34,8 +34,10 @@ async def main():
     await site.start()
     print(f"Server started at http://{HOST}:{PORT}")
 
+    # Keep running until KeyboardInterrupt
+    stop_event = asyncio.Event()
     try:
-        await asyncio.Event().wait()  # Keep server running
+        await stop_event.wait()
     except KeyboardInterrupt:
         print("Ctrl+C received, shutting down...")
     except asyncio.exceptions.CancelledError:
