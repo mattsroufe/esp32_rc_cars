@@ -21,7 +21,7 @@ private:
     int smoothedMotorSpeed = 0;               // Variable for smoothing throttle input
     const float MOTOR_SMOOTHING_FACTOR = 0.6; // Smoothing factor for motor speed
     const int MOTOR_DEAD_ZONE = 5;            // Dead zone threshold
-    const int MIN_SPEED_MS = 1250; // 1000;
+    const int MIN_SPEED_MS = 1000; // 1000;
     const int NEUTRAL_SPEED_MS = 1500; // 1500;
-    const int MAX_SPEED_MS = 1750; // 2000;
+    const int MAX_SPEED_MS = 2000; // 2000;
 };
