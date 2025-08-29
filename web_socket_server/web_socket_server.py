@@ -1,7 +1,7 @@
 import logging
 import asyncio
 import json
-from typing import Dict, Deque, Tuple, Any, Optional, Generator
+from typing import Dict, Deque, Tuple, Any, Generator
 from aiohttp import web, WSMessage
 import aiohttp
 import cv2
@@ -18,14 +18,7 @@ FRAME_RATE: float = 1 / 30
 
 # Type Aliases
 FrameQueue = Deque[Tuple[bytes, float]]
-
-class ClientData(Dict[str, Any]):
-    """Container for per-client video state."""
-    frames: FrameQueue
-    fps: float
-    frame_count: int
-
-VideoFrames = Dict[str, ClientData]
+VideoFrames = Dict[str, Dict[str, Any]]  # {"frames": FrameQueue, "fps": float, "frame_count": int}
 ControlCommands = Dict[str, Tuple[float, float]]
 
 # Utility Functions
@@ -55,11 +48,11 @@ def process_frame_canvas(frame_queues: VideoFrames) -> np.ndarray:
         frame_queue = client_data["frames"]
         if not frame_queue:
             continue
-        compressed_frame, _ = frame_queue[-1]  # latest frame
+        compressed_frame, _ = frame_queue[-1]
         frame_array = np.frombuffer(compressed_frame, dtype=np.uint8)
         frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
         if frame is None:
-            continue  # skip corrupt frames
+            continue
         x_offset, y_offset = get_offsets(i, cols)
         canvas[y_offset:y_offset + FRAME_HEIGHT, x_offset:x_offset + FRAME_WIDTH] = frame
 
@@ -160,7 +153,8 @@ async def stream_video(request: web.Request) -> web.StreamResponse:
 async def cleanup(app: web.Application) -> None:
     logging.info("Shutting down resources...")
     app['shutdown_event'].set()
-    app['process_pool'].shutdown(wait=True)
+    # Don't block forever — allow Ctrl+C to exit cleanly
+    app['process_pool'].shutdown(wait=False, cancel_futures=True)
 
 # Main Function
 def main() -> None:
@@ -172,7 +166,7 @@ def main() -> None:
     app['control_commands']: ControlCommands = {}
     app['frame_lock'] = asyncio.Lock()
     app['shutdown_event'] = asyncio.Event()
-    app['process_pool'] = ThreadPoolExecutor(max_workers=4)
+    app['process_pool'] = ThreadPoolExecutor(max_workers=4)  # ✅ switched from ProcessPool
 
     # Preload index.html once
     index_path = Path("index.html")
@@ -185,7 +179,9 @@ def main() -> None:
     app.router.add_static('/static', path='./static', name='static')
 
     app.on_shutdown.append(cleanup)
-    web.run_app(app, host='0.0.0.0', port=8080)
+
+    # ✅ handle_signals makes Ctrl+C work cleanly on Linux
+    web.run_app(app, host='0.0.0.0', port=8080, handle_signals=True)
 
 if __name__ == "__main__":
     main()
