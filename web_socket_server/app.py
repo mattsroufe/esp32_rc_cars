@@ -7,7 +7,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 async def create_application():
     app = web.Application()
-    app['shutdown_event'] = asyncio.Event()
     app['video_frames'] = {}
     app['control_commands'] = {}
     app['frame_lock'] = asyncio.Lock()
@@ -36,10 +35,11 @@ async def main():
     print(f"Server started at http://{HOST}:{PORT}")
 
     try:
-        await asyncio.Event().wait()
+        await asyncio.Event().wait()  # Keep server running
     except KeyboardInterrupt:
         print("Ctrl+C received, shutting down...")
     except asyncio.exceptions.CancelledError:
+        # Ignore cancellation during shutdown
         pass
     finally:
         await app.shutdown()
