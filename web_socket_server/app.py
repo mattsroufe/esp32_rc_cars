@@ -15,6 +15,9 @@ async def main():
         await asyncio.Event().wait()
     except KeyboardInterrupt:
         print("Ctrl+C received, shutting down...")
+    except asyncio.exceptions.CancelledError:
+        # Ignore CancelledError during shutdown
+        pass
     finally:
         await app.shutdown()
         await app.cleanup()
