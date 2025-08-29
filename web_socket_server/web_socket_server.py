@@ -1,27 +1,26 @@
 import logging
 import asyncio
 import json
-import signal
-from typing import Dict, Deque, Tuple, Any, Generator, TypedDict
+from typing import Dict, Deque, Tuple, Any, Optional, Generator
 from aiohttp import web, WSMessage
 import aiohttp
 import cv2
 import numpy as np
-from pathlib import Path
 from collections import deque
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from time import time
+from pathlib import Path
 
 # Constants
-FRAME_WIDTH = 320
-FRAME_HEIGHT = 240
-FRAME_RATE = 1 / 30
-MAX_FRAMES_PER_CLIENT = 10
+FRAME_WIDTH: int = 320
+FRAME_HEIGHT: int = 240
+FRAME_RATE: float = 1 / 30
 
 # Type Aliases
 FrameQueue = Deque[Tuple[bytes, float]]
 
-class ClientData(TypedDict):
+class ClientData(Dict[str, Any]):
+    """Container for per-client video state."""
     frames: FrameQueue
     fps: float
     frame_count: int
@@ -36,21 +35,13 @@ def calculate_grid_dimensions(num_clients: int) -> Tuple[int, int]:
     return rows, cols
 
 def get_offsets(index: int, cols: int) -> Tuple[int, int]:
-    x_offset = (index % cols) * FRAME_WIDTH
-    y_offset = (index // cols) * FRAME_HEIGHT
-    return x_offset, y_offset
+    return (index % cols) * FRAME_WIDTH, (index // cols) * FRAME_HEIGHT
 
 def calculate_frame_rate(frame_queue: FrameQueue) -> float:
     timestamps = [ts for _, ts in frame_queue]
     if len(timestamps) > 1:
         return round((len(timestamps) - 1) / (timestamps[-1] - timestamps[0]), 1)
     return 0.0
-
-def encode_frame_to_jpeg(frame: np.ndarray) -> bytes:
-    success, encoded = cv2.imencode('.jpg', frame)
-    if not success:
-        raise ValueError("Failed to encode frame")
-    return encoded.tobytes()
 
 def process_frame_canvas(frame_queues: VideoFrames) -> np.ndarray:
     num_clients = len(frame_queues)
@@ -64,13 +55,11 @@ def process_frame_canvas(frame_queues: VideoFrames) -> np.ndarray:
         frame_queue = client_data["frames"]
         if not frame_queue:
             continue
-
-        compressed_frame, _ = frame_queue[-1]
+        compressed_frame, _ = frame_queue[-1]  # latest frame
         frame_array = np.frombuffer(compressed_frame, dtype=np.uint8)
         frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
-        if frame is None or frame.shape[:2] != (FRAME_HEIGHT, FRAME_WIDTH):
-            continue
-
+        if frame is None:
+            continue  # skip corrupt frames
         x_offset, y_offset = get_offsets(i, cols)
         canvas[y_offset:y_offset + FRAME_HEIGHT, x_offset:x_offset + FRAME_WIDTH] = frame
 
@@ -78,94 +67,76 @@ def process_frame_canvas(frame_queues: VideoFrames) -> np.ndarray:
 
 # WebSocket Handlers
 async def handle_text_message(msg: WSMessage, request: web.Request, ws: web.WebSocketResponse) -> None:
-    try:
-        data = json.loads(msg.data)
-    except json.JSONDecodeError:
-        logging.warning("[WebSocket] Invalid JSON received")
-        return
-
     if msg.data == 'close':
         await ws.close()
-    else:
-        request.app['control_commands'].update(data)
-        video_info = {
-            client_ip: {
-                "fps": client_data["fps"],
-                "frame_count": client_data["frame_count"]
-            }
-            for client_ip, client_data in request.app['video_frames'].items()
-        }
-        await ws.send_json(video_info)
+        return
+
+    try:
+        request.app['control_commands'].update(json.loads(msg.data))
+    except json.JSONDecodeError:
+        logging.warning(f"Invalid JSON from client {request.remote}: {msg.data}")
+        return
+
+    video_info = {
+        client_ip: {"fps": client_data["fps"], "frame_count": client_data["frame_count"]}
+        for client_ip, client_data in request.app['video_frames'].items()
+    }
+    await ws.send_json(video_info)
 
 async def handle_binary_message(msg: WSMessage, client_ip: str, request: web.Request, ws: web.WebSocketResponse) -> None:
     frame_queue = request.app['video_frames'].setdefault(
-        client_ip, {"frames": deque(maxlen=MAX_FRAMES_PER_CLIENT), "fps": 0.0, "frame_count": 0}
+        client_ip, {"frames": deque(maxlen=10), "fps": 0.0, "frame_count": 0}
     )
-
     timestamp = time()
     frame_queue["frames"].append((msg.data, timestamp))
-    frame_queue["fps"] = calculate_frame_rate(frame_queue["frames"])
-    frame_queue["frame_count"] = len(frame_queue["frames"])
 
-    logging.debug(f"[WebSocket][{client_ip}] Frame received: count={frame_queue['frame_count']}, fps={frame_queue['fps']}")
+    fps = calculate_frame_rate(frame_queue["frames"])
+    frame_queue["fps"] = fps
+    frame_queue["frame_count"] = len(frame_queue["frames"])
 
     if client_ip in request.app['control_commands']:
         command = request.app['control_commands'][client_ip]
-        logging.debug(f"[WebSocket][{client_ip}] Sending control command: {command}")
-        try:
-            await ws.send_str(f"CONTROL:{command[0]}:{command[1]}")
-        except ConnectionResetError:
-            logging.info(f"[WebSocket][{client_ip}] Connection reset on send")
+        await ws.send_str(f"CONTROL:{command[0]}:{command[1]}")
 
 # HTTP Handlers
 async def index(request: web.Request) -> web.Response:
-    try:
-        html = Path('index.html').read_text()
-        return web.Response(text=html, content_type='text/html')
-    except FileNotFoundError:
-        logging.error("[HTTP] index.html not found")
-        return web.Response(status=404, text="Index file not found.")
+    return web.Response(text=request.app['index_html'], content_type='text/html')
 
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     client_ip = request.remote or "unknown"
-    logging.info(f"[WebSocket] Client connected: {client_ip}")
-
-    shutdown_event: asyncio.Event = request.app['shutdown_event']
+    logging.info(f"Client connected: {client_ip}")
 
     try:
-        while not ws.closed and not shutdown_event.is_set():
-            try:
-                msg = await ws.receive(timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
-
+        async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 await handle_text_message(msg, request, ws)
             elif msg.type == aiohttp.WSMsgType.BINARY:
                 await handle_binary_message(msg, client_ip, request, ws)
             elif msg.type == aiohttp.WSMsgType.ERROR:
-                logging.error(f"[WebSocket][{client_ip}] Error: {ws.exception()}")
-    except Exception as e:
-        logging.error(f"[WebSocket][{client_ip}] Exception: {e}")
+                logging.error(f"WebSocket error: {ws.exception()}")
     finally:
-        logging.info(f"[WebSocket] Client disconnected: {client_ip}")
-        await ws.close()
+        logging.info(f"Client disconnected: {client_ip}")
+
     return ws
 
-async def generate_frames(request: web.Request, pool: ProcessPoolExecutor) -> Generator[bytes, None, None]:
+async def generate_frames(request: web.Request, pool: ThreadPoolExecutor) -> Generator[bytes, None, None]:
     shutdown_event: asyncio.Event = request.app['shutdown_event']
+    loop = asyncio.get_event_loop()
+
     while not shutdown_event.is_set():
         async with request.app['frame_lock']:
-            frame_queues = request.app['video_frames']
+            frame_queues = dict(request.app['video_frames'])  # shallow copy
 
         try:
-            canvas = await asyncio.to_thread(process_frame_canvas, frame_queues)
-            jpeg_frame = await asyncio.to_thread(encode_frame_to_jpeg, canvas)
-            yield jpeg_frame
+            canvas = await loop.run_in_executor(pool, process_frame_canvas, frame_queues)
+            _, jpeg_frame = cv2.imencode('.jpg', canvas)
+            yield jpeg_frame.tobytes()
         except Exception as e:
-            logging.error(f"[Stream] Frame generation error: {e}")
+            logging.exception("Error generating frame: %s", e)
+            continue
+
         await asyncio.sleep(FRAME_RATE)
 
 async def stream_video(request: web.Request) -> web.StreamResponse:
@@ -178,92 +149,43 @@ async def stream_video(request: web.Request) -> web.StreamResponse:
     )
     await response.prepare(request)
 
-    pool: ProcessPoolExecutor = request.app['process_pool']
-    shutdown_event: asyncio.Event = request.app['shutdown_event']
-
-    try:
-        async for frame in generate_frames(request, pool):
-            if shutdown_event.is_set():
-                break
-            await response.write(
-                b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
-            )
-    except (asyncio.CancelledError, ConnectionResetError, RuntimeError) as e:
-        logging.info(f"[Stream] Client closed: {e}")
-    except Exception as e:
-        logging.error(f"[Stream] Unexpected error: {e}")
-    finally:
-        try:
-            await response.write_eof()
-        except ConnectionResetError:
-            pass
-        logging.info("[Stream] Video stream closed")
+    pool: ThreadPoolExecutor = request.app['process_pool']
+    async for frame in generate_frames(request, pool):
+        await response.write(
+            b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
+        )
     return response
 
-# Health Check
-async def health_check(request: web.Request) -> web.Response:
-    return web.Response(text="OK")
-
-# Cleanup & Shutdown
+# Cleanup Function
 async def cleanup(app: web.Application) -> None:
-    logging.info("[Shutdown] Cleaning up resources...")
+    logging.info("Shutting down resources...")
     app['shutdown_event'].set()
-    app['process_pool'].shutdown()
+    app['process_pool'].shutdown(wait=True)
 
-async def shutdown(app: web.Application):
-    logging.info("[Shutdown] Triggered")
-    await cleanup(app)
-    await app.shutdown()
-    await app.cleanup()
-
-def setup_signal_handlers(app: web.Application, loop: asyncio.AbstractEventLoop):
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(app)))
-
-# App Factory
-def create_app() -> web.Application:
+# Main Function
+def main() -> None:
+    logging.basicConfig(level=logging.INFO)
     app = web.Application()
+
+    # Shared state
     app['video_frames']: VideoFrames = {}
     app['control_commands']: ControlCommands = {}
     app['frame_lock'] = asyncio.Lock()
     app['shutdown_event'] = asyncio.Event()
-    app['process_pool'] = ProcessPoolExecutor(max_workers=4)
+    app['process_pool'] = ThreadPoolExecutor(max_workers=4)
 
+    # Preload index.html once
+    index_path = Path("index.html")
+    app['index_html'] = index_path.read_text(encoding="utf-8") if index_path.exists() else "<h1>No index.html</h1>"
+
+    # Routes
     app.router.add_get('/', index)
     app.router.add_get('/video', stream_video)
     app.router.add_get('/ws', websocket_handler)
-    app.router.add_get('/health', health_check)
     app.router.add_static('/static', path='./static', name='static')
 
-    return app
-
-# Main Function with Manual Event Loop
-def main():
-    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
-    app = create_app()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    runner = web.AppRunner(app)
-
-    async def start():
-        await runner.setup()
-        site = web.TCPSite(runner, host='0.0.0.0', port=8080)
-        await site.start()
-        setup_signal_handlers(app, loop)
-        logging.info("🚀 Server started at http://0.0.0.0:8080")
-
-    try:
-        loop.run_until_complete(start())
-        loop.run_forever()
-    except KeyboardInterrupt:
-        logging.info("🛑 KeyboardInterrupt received")
-    finally:
-        loop.run_until_complete(shutdown(app))
-        loop.run_until_complete(runner.cleanup())
-        loop.close()
-        logging.info("✅ Server shut down cleanly")
+    app.on_shutdown.append(cleanup)
+    web.run_app(app, host='0.0.0.0', port=8080)
 
 if __name__ == "__main__":
     main()
