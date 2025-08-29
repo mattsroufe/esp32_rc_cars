@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 RC</title>
+  <link rel="stylesheet" href="static/app.css">
+</head>
+
+<body>
+  <div class="container">
+    <div class="side-panels">
+      <div id="gamepad-info-0" class="panel">
+        <h3>Gamepad 1</h3>
+        <p>Axes: <span class="axes"></span></p>
+        <p>Buttons: <span class="buttons"></span></p>
+      </div>
+      <div id="gamepad-info-2" class="panel">
+        <h3>Gamepad 3</h3>
+        <p>Axes: <span class="axes"></span></p>
+        <p>Buttons: <span class="buttons"></span></p>
+      </div>
+    </div>
+    <div class="video-section">
+      <img src="http://localhost:8080/video" alt="Video Stream"></img>
+      <!-- <video src="http://localhost:8000/video" autoplay muted loop></video> -->
+    </div>
+    <div class="side-panels">
+      <div id="gamepad-info-1" class="panel">
+        <h3>Gamepad 2</h3>
+        <p>Axes: <span class="axes"></span></p>
+        <p>Buttons: <span class="buttons"></span></p>
+      </div>
+      <div id="gamepad-info-3" class="panel">
+        <h3>Gamepad 4</h3>
+        <p>Axes: <span class="axes"></span></p>
+        <p>Buttons: <span class="buttons"></span></p>
+      </div>
+    </div>
+  </div>
+  <script src="./static/app.js"></script>
+</body>
+
+</html>
