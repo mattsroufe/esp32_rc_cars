@@ -5,6 +5,7 @@ from time import time
 from collections import deque
 from video_utils import calculate_frame_rate
 
+
 async def handle_text_message(msg: WSMsgType, request: web.Request, ws: web.WebSocketResponse):
     if msg.data == 'close':
         await ws.close()
@@ -21,6 +22,7 @@ async def handle_text_message(msg: WSMsgType, request: web.Request, ws: web.WebS
     }
     await ws.send_json(video_info)
 
+
 async def handle_binary_message(msg: WSMsgType, client_ip: str, request: web.Request, ws: web.WebSocketResponse):
     frame_queue = request.app['video_frames'].setdefault(
         client_ip, {"frames": deque(maxlen=10), "fps": 0.0, "frame_count": 0}
@@ -35,11 +37,15 @@ async def handle_binary_message(msg: WSMsgType, client_ip: str, request: web.Req
         command = request.app['control_commands'][client_ip]
         await ws.send_str(f"CONTROL:{command[0]}:{command[1]}")
 
+
 async def websocket_handler(request: web.Request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     client_ip = request.remote or "unknown"
     logging.info(f"Client connected: {client_ip}")
+
+    # Register connection
+    request.app['websockets'].add(ws)
 
     try:
         async for msg in ws:
@@ -50,6 +56,8 @@ async def websocket_handler(request: web.Request):
             elif msg.type == WSMsgType.ERROR:
                 logging.error(f"WebSocket error: {ws.exception()}")
     finally:
+        # Always remove socket when done
+        request.app['websockets'].discard(ws)
         logging.info(f"Client disconnected: {client_ip}")
 
     return ws
