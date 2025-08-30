@@ -7,7 +7,7 @@ from video_utils import calculate_frame_rate
 
 
 async def handle_text_message(msg: WSMsgType, request: web.Request, ws: web.WebSocketResponse):
-    if msg.data == 'close':
+    if msg.data == "close":
         await ws.close()
         return
     try:
@@ -44,7 +44,7 @@ async def websocket_handler(request: web.Request):
     client_ip = request.remote or "unknown"
     logging.info(f"Client connected: {client_ip}")
 
-    # Register connection
+    # Track active sockets
     request.app['websockets'].add(ws)
 
     try:
@@ -56,7 +56,6 @@ async def websocket_handler(request: web.Request):
             elif msg.type == WSMsgType.ERROR:
                 logging.error(f"WebSocket error: {ws.exception()}")
     finally:
-        # Always remove socket when done
         request.app['websockets'].discard(ws)
         logging.info(f"Client disconnected: {client_ip}")
 
