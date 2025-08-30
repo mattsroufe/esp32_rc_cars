@@ -1,53 +1,41 @@
 import asyncio
+import os
+from server import create_app
 from aiohttp import web
-from server import index, video_feed, websocket_handler
-from cleanup import cleanup
-from config import HOST, PORT, MAX_THREADS, FRAME_RATE
-from concurrent.futures import ThreadPoolExecutor
-
-async def create_application():
-    app = web.Application()
-    app['video_frames'] = {}
-    app['control_commands'] = {}
-    app['frame_lock'] = asyncio.Lock()
-    app['thread_pool'] = ThreadPoolExecutor(max_workers=MAX_THREADS)
-    app['frame_rate'] = FRAME_RATE
-
-    # Routes
-    app.router.add_get("/", index)
-    app.router.add_get("/video", video_feed)
-    app.router.add_get("/ws", websocket_handler)
-
-    # Static files
-    app.router.add_static("/static", path="./static", name="static")
-
-    # Cleanup
-    app.on_cleanup.append(cleanup)
-    return app
-
 
 async def main():
-    app = await create_application()
+    # Create the aiohttp application
+    app = create_app()
+
+    # Set host and port from environment variables
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8080"))
+
+    # Setup runner and site
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, HOST, PORT)
+    site = web.TCPSite(runner, host, port)
     await site.start()
-    print(f"Server started at http://{HOST}:{PORT}")
 
-    # Keep running until KeyboardInterrupt
-    stop_event = asyncio.Event()
+    print(f"Server running at http://{host}:{port}")
+    
+    # Run until Ctrl+C
     try:
-        await stop_event.wait()
+        await asyncio.Event().wait()
     except KeyboardInterrupt:
         print("Ctrl+C received, shutting down...")
-    except asyncio.exceptions.CancelledError:
-        # Ignore cancellation during shutdown
-        pass
     finally:
-        await app.shutdown()
-        await app.cleanup()
+        # Clean up
         await runner.cleanup()
-
+        # Shutdown thread pool
+        thread_pool = app.get("thread_pool")
+        if thread_pool:
+            thread_pool.shutdown(wait=False)
+        print("Shutdown complete")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except asyncio.CancelledError:
+        # Prevent CancelledError from leaking on shutdown
+        pass
