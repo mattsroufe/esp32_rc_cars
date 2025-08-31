@@ -100,7 +100,7 @@ sudo apt install python3-aiohttp python3-opencv python3-numpy
 2. Start the server:
 
 ```bash
-python3 server.py
+python3 app.py
 ```
 
 The server will be accessible on `http://localhost:8080/`.
