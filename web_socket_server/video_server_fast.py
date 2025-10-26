@@ -89,7 +89,8 @@ def calculate_grid_dimensions(n: int) -> Tuple[int, int]:
 def process_frame_canvas_sync(frame_queues: VideoFrames, canvas_info: Dict[str, Any]) -> bytes:
     """
     Synchronous heavy work: builds the canvas and returns encoded JPEG bytes.
-    Uses canvas_info to re-use preallocated buffer and to optionally use CUDA.
+    Fully uses CUDA for frame resizing and combining (grid composition) when available.
+    Only JPEG decode and final JPEG encode remain on CPU.
     """
     num_clients = len(frame_queues)
     rows, cols = calculate_grid_dimensions(num_clients)
@@ -108,6 +109,11 @@ def process_frame_canvas_sync(frame_queues: VideoFrames, canvas_info: Dict[str, 
 
     use_cuda = canvas_info.get("use_cuda", False) and HAVE_CUDA
 
+    if use_cuda:
+        # Allocate GPU canvas once
+        gpu_canvas = cv2.cuda_GpuMat()
+        gpu_canvas.upload(canvas)
+
     for idx, (client_ip, client_data) in enumerate(frame_queues.items()):
         frames = client_data.get("frames")
         if not frames:
@@ -116,42 +122,42 @@ def process_frame_canvas_sync(frame_queues: VideoFrames, canvas_info: Dict[str, 
         if compressed_mv is None:
             continue
 
+        # Decode JPEG on CPU
         arr = np.frombuffer(compressed_mv, dtype=np.uint8)
         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if frame is None:
             continue
 
-        # Resize using CUDA if enabled
-        if frame.shape[0] != FRAME_HEIGHT or frame.shape[1] != FRAME_WIDTH:
-            if use_cuda:
-                try:
-                    gpu_frame = cv2.cuda_GpuMat()
-                    gpu_frame.upload(frame)
-                    gpu_resized = cv2.cuda.resize(gpu_frame, (FRAME_WIDTH, FRAME_HEIGHT), interpolation=cv2.INTER_LINEAR)
-                    frame = gpu_resized.download()
-                except Exception:
-                    frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT), interpolation=cv2.INTER_AREA)
-            else:
-                frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT), interpolation=cv2.INTER_AREA)
-
-        y = (idx // cols) * FRAME_HEIGHT
-        x = (idx % cols) * FRAME_WIDTH
-
+        # Upload frame to GPU if CUDA is enabled
         if use_cuda:
             try:
-                gpu_canvas = cv2.cuda_GpuMat()
-                gpu_canvas.upload(canvas)
-                gpu_canvas_roi = gpu_canvas.rowRange(y, y + FRAME_HEIGHT).colRange(x, x + FRAME_WIDTH)
-                gpu_frame_mat = cv2.cuda_GpuMat()
-                gpu_frame_mat.upload(frame)
-                gpu_frame_mat.copyTo(gpu_canvas_roi)
-                canvas = gpu_canvas.download()
-            except Exception:
-                canvas[y:y+FRAME_HEIGHT, x:x+FRAME_WIDTH] = frame
-        else:
-            canvas[y:y+FRAME_HEIGHT, x:x+FRAME_WIDTH] = frame
+                gpu_frame = cv2.cuda_GpuMat()
+                gpu_frame.upload(frame)
 
-    # JPEG encode
+                # Resize directly on GPU if needed
+                if frame.shape[0] != FRAME_HEIGHT or frame.shape[1] != FRAME_WIDTH:
+                    gpu_frame = cv2.cuda.resize(gpu_frame, (FRAME_WIDTH, FRAME_HEIGHT))
+
+                # Copy to correct ROI on GPU canvas
+                y, x = (idx // cols) * FRAME_HEIGHT, (idx % cols) * FRAME_WIDTH
+                roi = gpu_canvas.rowRange(y, y + FRAME_HEIGHT).colRange(x, x + FRAME_WIDTH)
+                gpu_frame.copyTo(roi)
+                continue  # skip CPU canvas copy
+            except Exception:
+                # Fallback to CPU if CUDA fails
+                pass
+
+        # CPU fallback
+        if frame.shape[0] != FRAME_HEIGHT or frame.shape[1] != FRAME_WIDTH:
+            frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT), interpolation=cv2.INTER_AREA)
+        y, x = (idx // cols) * FRAME_HEIGHT, (idx % cols) * FRAME_WIDTH
+        canvas[y:y+FRAME_HEIGHT, x:x+FRAME_WIDTH] = frame
+
+    # Download final canvas from GPU if used
+    if use_cuda:
+        canvas = gpu_canvas.download()
+
+    # Encode JPEG
     if HAVE_TURBOJPEG and _jpeg is not None:
         return _jpeg.encode(canvas, quality=JPEG_QUALITY)
     else:
