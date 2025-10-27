@@ -223,8 +223,6 @@ async def generate_frames(request: web.Request):
     frame_interval = request.app['frame_rate']
     canvas_info = request.app['canvas_info']
 
-    target_time = time()
-
     while not shutdown_event.is_set():
         async with request.app['frame_lock']:
             frame_queues = dict(request.app['video_frames'])
@@ -237,16 +235,6 @@ async def generate_frames(request: web.Request):
             break
         except Exception as e:
             logging.warning(f"Frame generation error: {e}")
-
-        target_time += frame_interval
-        now = time()
-        delay = target_time - now
-        if delay <= 0:
-            if now - target_time > 1.0:
-                target_time = now
-            await asyncio.sleep(0)
-        else:
-            await asyncio.sleep(delay)
 
 async def video_feed(request: web.Request):
     response = web.StreamResponse(
