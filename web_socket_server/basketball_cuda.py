@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Full GPU-accelerated dual-camera motion/object detection.
-Safe for partial CUDA builds (handles GpuMat <-> ndarray conversions cleanly).
+Compatible with OpenCV 4.13.0-dev CUDA bindings.
 """
 
 import cv2
@@ -67,7 +67,7 @@ gpu_kernel.upload(kernel)
 def process_frame(name, frame):
     start_t = time.time()
 
-    # Upload frame
+    # Upload to GPU
     gpu_frame = cv2.cuda_GpuMat()
     gpu_frame.upload(frame)
 
@@ -79,21 +79,15 @@ def process_frame(name, frame):
     # Convert to gray
     gpu_gray = cv2.cuda.cvtColor(gpu_resized, cv2.COLOR_BGR2GRAY)
 
-    # Background subtraction
-    # (Handle both ndarray and GpuMat versions)
-    try:
-        gpu_fgmask = fgbg.apply(gpu_gray)
-    except cv2.error:
-        # fallback: convert to CPU numpy
-        fgmask_cpu = fgbg.apply(gpu_gray.download())
-        gpu_fgmask = cv2.cuda_GpuMat()
-        gpu_fgmask.upload(fgmask_cpu)
+    # Background subtraction (OpenCV 4.13 CUDA signature)
+    learningRate = 0.01
+    gpu_fgmask = fgbg.apply(gpu_gray, learningRate)
 
-    # Morph ops
+    # Morphology (GPU)
     gpu_fgmask = cv2.cuda.erode(gpu_fgmask, gpu_kernel)
     gpu_fgmask = cv2.cuda.dilate(gpu_fgmask, gpu_kernel)
 
-    # Download for contour detection
+    # Download to CPU for contour drawing
     fgmask = gpu_fgmask.download()
     frame_resized = gpu_resized.download()
 
@@ -117,6 +111,7 @@ def process_frame(name, frame):
         cv2.LINE_AA,
     )
     cv2.imshow(name, frame_resized)
+
 
 # ----------------------------
 # Main loop
