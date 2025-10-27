@@ -1,0 +1,9 @@
+❌ GPU processing error on Cam 0: OpenCV(4.13.0-dev) :-1: error: (-5:Bad argument) in function 'apply'
+> Overload resolution failed:
+>  - cuda_BackgroundSubtractorMOG2.apply() missing required argument 'learningRate' (pos 2)
+>  - cuda_BackgroundSubtractorMOG2.apply() missing required argument 'learningRate' (pos 2)
+>  - cuda_BackgroundSubtractorMOG2.apply() missing required argument 'knownForegroundMask' (pos 2)
+>  - cuda_BackgroundSubtractorMOG2.apply() missing required argument 'knownForegroundMask' (pos 2)
+>  - cuda_BackgroundSubtractorMOG2.apply() missing required argument 'learningRate' (pos 2)
+>  - cuda_BackgroundSubtractorMOG2.apply() missing required argument 'knownForegroundMask' (pos 2)
+
