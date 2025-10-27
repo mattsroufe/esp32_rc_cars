@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 GPU-accelerated dual-camera motion/object detection.
-Uses OpenCV CUDA if available, with live FPS overlay.
+- Combines both frames side-by-side into a single GPU stream
+- Uses CUDA MOG2 background subtraction
+- Falls back to CPU if CUDA unavailable
 """
 
 import cv2
@@ -9,13 +11,13 @@ import numpy as np
 import time
 
 # ----------------------------
-# Check for CUDA support
+# Check CUDA availability
 # ----------------------------
 cuda_enabled = cv2.cuda.getCudaEnabledDeviceCount() > 0
 print(f"CUDA available: {cuda_enabled}")
 
 # ----------------------------
-# Choose background subtractor
+# Background subtractor
 # ----------------------------
 if cuda_enabled:
     fgbg = cv2.cuda.createBackgroundSubtractorMOG2(
@@ -29,7 +31,7 @@ else:
 # ----------------------------
 # Open cameras
 # ----------------------------
-cam_ids = ["/dev/video2", "/dev/video0"]
+cam_ids = ["/dev/video0", "/dev/video2"]
 caps = [cv2.VideoCapture(i) for i in cam_ids]
 
 for cap in caps:
@@ -39,61 +41,65 @@ for cap in caps:
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-scale_percent = 60  # percent of original size
+scale_percent = 60  # downscale to reduce GPU load
+learning_rate = 0.01
+
+# Prebuild kernel once
+kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+
+if cuda_enabled:
+    gpu_kernel = cv2.cuda_GpuMat()
+    gpu_kernel.upload(kernel)
 
 # ----------------------------
-# GPU/CPU Frame Processor
+# Frame Processor
 # ----------------------------
-def process_frame(name, frame):
+def process_combined(frameL, frameR):
     start_t = time.time()
 
     # Resize
-    width = int(frame.shape[1] * scale_percent / 100)
-    height = int(frame.shape[0] * scale_percent / 100)
+    width = int(frameL.shape[1] * scale_percent / 100)
+    height = int(frameL.shape[0] * scale_percent / 100)
     dim = (width, height)
+    frameL = cv2.resize(frameL, dim, interpolation=cv2.INTER_AREA)
+    frameR = cv2.resize(frameR, dim, interpolation=cv2.INTER_AREA)
+
+    # Combine side-by-side
+    combined = np.hstack((frameL, frameR))
 
     if cuda_enabled:
-        # Upload to GPU
         gpu_frame = cv2.cuda_GpuMat()
-        gpu_frame.upload(frame)
+        gpu_frame.upload(combined)
 
-        # Convert to grayscale on GPU
+        # Grayscale + Background subtraction
         gpu_gray = cv2.cuda.cvtColor(gpu_frame, cv2.COLOR_BGR2GRAY)
+        gpu_fgmask = fgbg.apply(gpu_gray, None, learning_rate)
 
-        # Background subtraction with explicit learningRate
-        learningRate = 0.01  # small float, adjust to suit your scene
-        gpu_fgmask = fgbg.apply(gpu_gray, learningRate)
+        # Morphological filtering
+        gpu_fgmask = cv2.cuda.erode(gpu_fgmask, gpu_kernel)
+        gpu_fgmask = cv2.cuda.dilate(gpu_fgmask, gpu_kernel)
 
-        # Morphological ops on GPU
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        gpu_kernel = cv2.cuda_GpuMat()
-        gpu_kernel.upload(kernel)
-        gpu_fgmask = cv2.cuda.erode(gpu_fgmask, gpu_kernel, iterations=1)
-        gpu_fgmask = cv2.cuda.dilate(gpu_fgmask, gpu_kernel, iterations=1)
-
-        # Download mask back to CPU for contours
+        # Download for contour detection
         fgmask = gpu_fgmask.download()
+        frame = gpu_frame.download()
 
     else:
-        # CPU fallback
-        frame = cv2.resize(frame, dim, interpolation=cv2.INTER_AREA)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(combined, cv2.COLOR_BGR2GRAY)
         fgmask = fgbg.apply(gray)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         fgmask = cv2.erode(fgmask, kernel, iterations=1)
         fgmask = cv2.dilate(fgmask, kernel, iterations=1)
+        frame = combined
 
-    # Contour detection (CPU)
+    # Contour detection
     contours, _ = cv2.findContours(fgmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     for contour in contours:
         area = cv2.contourArea(contour)
-        if 200 < area < 700:
+        if 200 < area < 1000:
             x, y, w, h = cv2.boundingRect(contour)
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-    # FPS calculation
-    end_t = time.time()
-    fps = 1.0 / (end_t - start_t + 1e-6)
+    # FPS
+    fps = 1.0 / (time.time() - start_t + 1e-6)
     cv2.putText(
         frame,
         f"{'GPU' if cuda_enabled else 'CPU'} {fps:.1f} FPS",
@@ -105,24 +111,22 @@ def process_frame(name, frame):
         cv2.LINE_AA,
     )
 
-    # Display result
-    cv2.imshow(name, frame)
+    cv2.imshow("Combined Motion View", frame)
+
 
 # ----------------------------
 # Main Loop
 # ----------------------------
 print("Press 'q' to quit.")
 while True:
-    for idx, cap in enumerate(caps):
-        ret, frame = cap.read()
-        if ret:
-            process_frame(f"Cam {idx}", frame)
+    rets_frames = [cap.read() for cap in caps]
+    if all(rf[0] for rf in rets_frames):
+        process_combined(rets_frames[0][1], rets_frames[1][1])
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
-print("Shutting down gracefully")
+print("Shutting down gracefully...")
 for cap in caps:
     cap.release()
 cv2.destroyAllWindows()
-
