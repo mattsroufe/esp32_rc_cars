@@ -30,7 +30,7 @@ class Config:
     PORT = int(os.getenv("PORT", "8080"))
     FRAME_RATE_FPS = float(os.getenv("FRAME_RATE", "60"))
     FRAME_INTERVAL = 1.0 / FRAME_RATE_FPS
-    MAX_EXPECTED_CLIENTS = int(os.getenv("MAX_EXPECTED_CLIENTS", "8"))
+    MAX_EXPECTED_CLIENTS = int(os.getenv("MAX_EXPECTED_CLIENTS", "4"))  # default 4
     MAX_THREADS = max(2, min(MAX_EXPECTED_CLIENTS * 2, cpu_count() * 2))
     FRAME_WIDTH = int(os.getenv("FRAME_WIDTH", "320"))
     FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", "240"))
@@ -57,6 +57,8 @@ class Encoder:
         self.quality = quality
 
     def encode(self, frame: np.ndarray) -> bytes:
+        if frame is None or frame.size == 0:
+            frame = np.zeros((Config.FRAME_HEIGHT, Config.FRAME_WIDTH, 3), dtype=np.uint8)
         if self.nvencoder:
             try:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -132,13 +134,20 @@ class GPUCanvasProcessor(CanvasProcessor):
             if frame is None:
                 continue
             y, x = (idx // self.cols) * self.cfg.FRAME_HEIGHT, (idx % self.cols) * self.cfg.FRAME_WIDTH
+
             try:
-                gpu_frame = frame if isinstance(frame, cv2.cuda_GpuMat) else cv2.cuda_GpuMat()
+                # only resize if necessary
                 if not isinstance(frame, cv2.cuda_GpuMat):
+                    if frame.shape[:2] != (self.cfg.FRAME_HEIGHT, self.cfg.FRAME_WIDTH):
+                        frame = cv2.resize(frame, (self.cfg.FRAME_WIDTH, self.cfg.FRAME_HEIGHT))
+                    gpu_frame = cv2.cuda_GpuMat()
                     gpu_frame.upload(frame)
+                else:
+                    gpu_frame = frame
                 roi = self.gpu_canvas.rowRange(y, y+self.cfg.FRAME_HEIGHT).colRange(x, x+self.cfg.FRAME_WIDTH)
                 gpu_frame.copyTo(roi)
             except Exception:
+                # fallback to CPU
                 cpu_canvas = self.gpu_canvas.download()
                 f = frame if isinstance(frame, np.ndarray) else frame.download()
                 if f.shape[:2] != (self.cfg.FRAME_HEIGHT, self.cfg.FRAME_WIDTH):
@@ -159,6 +168,7 @@ class AppContext:
         self.encoder = None
         self.canvas_processor = None
         self.check_capabilities()
+        self._warmup_gpu()
 
     def check_capabilities(self):
         try:
@@ -179,6 +189,13 @@ class AppContext:
         self.encoder = Encoder(self.nvencoder, self.cfg.JPEG_QUALITY)
         self.canvas_processor = GPUCanvasProcessor(self.cfg) if self.have_cuda else CPUCanvasProcessor(self.cfg)
 
+    def _warmup_gpu(self):
+        if self.have_cuda:
+            blank = np.zeros((self.cfg.FRAME_HEIGHT, self.cfg.FRAME_WIDTH, 3), dtype=np.uint8)
+            g = cv2.cuda_GpuMat()
+            g.upload(blank)
+            g.download()
+
 # -------------------------
 # Frame Processor
 # -------------------------
@@ -189,7 +206,8 @@ class FrameProcessor:
         self.executor = ThreadPoolExecutor(max_workers=ctx.cfg.MAX_THREADS)
 
     async def process_frames_async(self, frame_queues):
-        return await self.loop.run_in_executor(self.executor, self._process_frames_sync, frame_queues)
+        # copy to avoid "Future already retrieved"
+        return await self.loop.run_in_executor(self.executor, self._process_frames_sync, dict(frame_queues))
 
     def _process_frames_sync(self, frame_queues):
         if not frame_queues:
@@ -238,11 +256,13 @@ class MJPEGServer:
         else:
             fq['fps'] = 0.0
 
+        # send control commands immediately when frame is received
         if client_ip in request.app['control_commands']:
             cmd = request.app['control_commands'][client_ip]
             asyncio.create_task(ws.send_str(f"CONTROL:{cmd[0]}:{cmd[1]}"))
 
     async def handle_text(self, msg, request, ws):
+        # preserve your working logic
         if msg.data == 'close':
             await ws.close()
             return
