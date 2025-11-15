@@ -10,6 +10,11 @@ using namespace websockets;
 WebsocketsClient client;
 
 // ==== Hardware ====
+#define DUMMY_PIN -1 // Pin for servo control 
+// Create two dummy instances of the Servo class to increment the pwm channels since we're using the camera
+ServoControl dummyServo1(DUMMY_PIN);
+ServoControl dummyServo2(DUMMY_PIN);
+
 ServoControl steeringServo;
 Esc esc;
 
@@ -24,7 +29,7 @@ QueueHandle_t frameQueue;       // For camera frames
 
 // ==== Timeout ====
 unsigned long lastCommandTime = 0;
-const int COMMAND_TIMEOUT = 100; // ms
+const int COMMAND_TIMEOUT = 50; // ms
 
 // ==== Control struct ====
 struct ControlCommand {
@@ -57,7 +62,7 @@ esp_err_t init_camera() {
   config.pixel_format = PIXFORMAT_JPEG;
 
   config.frame_size = FRAMESIZE_QVGA;
-  config.jpeg_quality = 7;
+  config.jpeg_quality = 10;
   config.fb_count = 2; // double buffer for smoother streaming
 
   esp_err_t err = esp_camera_init(&config);
