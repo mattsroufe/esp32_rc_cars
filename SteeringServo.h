@@ -1,29 +1,12 @@
 #ifndef STEERINGSERVO_H
 #define STEERINGSERVO_H
 
-#include <ESP32Servo.h>
-#include "config.h"
+// SteeringServo is now an alias for ServoControl with steering-specific defaults.
+// This file is kept for backward compatibility.
+// New code should use ServoControl directly.
 
-class SteeringServo
-{
-public:
-    SteeringServo(int pin,
-                  int minAngle = SERVO_MIN_ANGLE,
-                  int maxAngle = SERVO_MAX_ANGLE,
-                  int deadZone = SERVO_DEADZONE);
+#include "ServoControl.h"
 
-    void control(int position);
+using SteeringServo = ServoControl;
 
-private:
-    int _pin;
-    int _minAngle;
-    int _maxAngle;
-    int _deadZone;
-    static constexpr int _centerPos = SERVO_CENTER;
-
-    Servo _servo;
-
-    int mapSteering(int input);
-};
-
-#endif
+#endif // STEERINGSERVO_H

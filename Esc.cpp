@@ -1,38 +1,50 @@
-// Esc.cpp
-#include "Esc.h" // Include the header file
+#include "Esc.h"
+#include <Arduino.h>
 
-// Constructor that initializes the ESC with a given pin
-Esc::Esc(int pin)
-{
-    _pin = pin;
-    _esc.attach(_pin); // Attach the ESC to the specified pin
+Esc::Esc(int pin) : _pin(pin) {}
+
+void Esc::initialize() {
+    if (_initialized) return;
+
+    _servo.attach(_pin);
+    _servo.writeMicroseconds(EscConfig::NEUTRAL_PULSE_US);
+    delay(Timing::ESC_INIT_DELAY_MS);
+    _initialized = true;
 }
 
-// Method to initialize the ESC (sets it to 0 speed initially)
-void Esc::initialize()
-{
-    _esc.writeMicroseconds(NEUTRAL_SPEED_MS); // Start motor at 0 speed
-    delay(1000);                  // Wait for ESC initialization
+void Esc::reset() {
+    _smoothedSpeed = 0;
+    if (_initialized) {
+        _servo.writeMicroseconds(EscConfig::NEUTRAL_PULSE_US);
+    }
 }
 
-// Method to control the ESC based on the throttle input
-void Esc::control(int throttle)
-{
-    if (abs(throttle) < MOTOR_DEAD_ZONE)
-    {
-        throttle = 0; // Ignore small values within dead zone
+void Esc::control(int throttle) {
+    if (!_initialized) return;
+
+    // Apply deadzone
+    if (abs(throttle) < EscConfig::DEADZONE) {
+        throttle = 0;
     }
 
-    // Smooth the throttle value
-    smoothedMotorSpeed = smoothedMotorSpeed + MOTOR_SMOOTHING_FACTOR * (throttle - smoothedMotorSpeed);
+    // Constrain input
+    throttle = constrain(throttle, EscConfig::MIN_THROTTLE, EscConfig::MAX_THROTTLE);
 
-    // Map the smoothed throttle value from -255 to 255 into a PWM signal range (1000 to 2000 microseconds)
-    int pwmValue = map(smoothedMotorSpeed, -255, 255, MIN_SPEED_MS, MAX_SPEED_MS);
+    // Apply smoothing and convert to pulse width
+    int smoothed = applySmoothing(throttle);
+    int pulseWidth = throttleToPulse(smoothed);
 
-    // Set the PWM signal to the ESC
-    _esc.writeMicroseconds(pwmValue);
+    _servo.writeMicroseconds(pulseWidth);
+}
 
-    // Optionally, print the PWM value for debugging
-    // Serial.print(" - PWM Value: ");
-    // Serial.println(pwmValue);
+int Esc::applySmoothing(int targetSpeed) {
+    _smoothedSpeed = _smoothedSpeed +
+        EscConfig::SMOOTHING_FACTOR * (targetSpeed - _smoothedSpeed);
+    return _smoothedSpeed;
+}
+
+int Esc::throttleToPulse(int throttle) const {
+    return map(throttle,
+               EscConfig::MIN_THROTTLE, EscConfig::MAX_THROTTLE,
+               EscConfig::MIN_PULSE_US, EscConfig::MAX_PULSE_US);
 }

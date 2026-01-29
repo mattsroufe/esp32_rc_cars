@@ -1,2 +1,45 @@
+# Secrets
 secrets.h
-.venv
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Arduino/PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local
+
+# Test coverage
+htmlcov/
+.coverage
+.pytest_cache/

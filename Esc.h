@@ -1,27 +1,32 @@
-// Esc.h
-#pragma once // Prevents double inclusion of this file
+#ifndef ESC_H
+#define ESC_H
 
-#include <ESP32Servo.h> // Include the Servo library to control the ESC
+#include <ESP32Servo.h>
+#include "config.h"
+#include "Controllable.h"
 
-class Esc
-{
+class Esc : public Controllable {
 public:
-    // Constructor that takes the pin number for the ESC
-    Esc(int pin = 13);
+    explicit Esc(int pin = Pins::ESC);
 
-    // Method to initialize the ESC
-    void initialize();
+    // Controllable interface
+    void initialize() override;
+    void control(int throttle) override;
+    void reset() override;
+    bool isInitialized() const override { return _initialized; }
 
-    // Method to control the ESC with a throttle value
-    void control(int throttle);
+    // Getters for current state
+    int getCurrentSpeed() const { return _smoothedSpeed; }
+    int getPin() const { return _pin; }
 
 private:
-    int _pin;                                 // Pin for the ESC
-    Servo _esc;                               // Servo object to control the ESC
-    int smoothedMotorSpeed = 0;               // Variable for smoothing throttle input
-    const float MOTOR_SMOOTHING_FACTOR = 0.6; // Smoothing factor for motor speed
-    const int MOTOR_DEAD_ZONE = 5;            // Dead zone threshold
-    const int MIN_SPEED_MS = 1000; // 1000;
-    const int NEUTRAL_SPEED_MS = 1500; // 1500;
-    const int MAX_SPEED_MS = 2000; // 2000;
+    int throttleToPulse(int throttle) const;
+    int applySmoothing(int targetSpeed);
+
+    const int _pin;
+    Servo _servo;
+    int _smoothedSpeed = 0;
+    bool _initialized = false;
 };
+
+#endif // ESC_H

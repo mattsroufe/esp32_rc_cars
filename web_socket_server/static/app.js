@@ -1,146 +1,281 @@
-const ws = new WebSocket('ws://localhost:8080/ws');
-const GAMEPAD_POLLING_INTERVAL = 30; // ms for polling gamepad status
-let clients = [];
+/**
+ * ESP32 RC Cars - Browser Control Interface
+ * Handles gamepad input and WebSocket communication with the server.
+ */
 
-// Holds FPS and frame count for each client
-let clientStats = {};
-
-ws.onmessage = function (event) {
-  const json = JSON.parse(event.data);
-
-  // Update the client list
-  clients = Object.keys(json);
-
-  // Update the FPS and frame count for each client
-  let i = 0;
-  Object.keys(json).forEach(clientIp => {
-    const stats = json[clientIp];
-    clientStats[clientIp] = stats;
-
-    // Update the client's gamepad panel with FPS and frame count
-    updateGamepadPanel(i, stats.fps, stats.frame_count);
-    i++;
-  });
+// =============================================================================
+// Configuration
+// =============================================================================
+const CONFIG = {
+  GAMEPAD_POLLING_INTERVAL: 30,  // ms
+  WS_RECONNECT_DELAY: 2000,      // ms
+  WS_MAX_RECONNECT_ATTEMPTS: 10,
+  THROTTLE_MIN: -255,
+  THROTTLE_MAX: 255,
+  STEERING_MIN: 0,
+  STEERING_MAX: 180,
 };
 
-function sendMessage() {
-  ws.send(message);
-}
-
-ws.onclose = function () {
-  // Handle WebSocket closure
-};
-
-const gamepads = {};
-
-// Configuration object for joystick ranges
-const controllerConfig = {
+// Controller-specific axis configurations
+const CONTROLLER_CONFIGS = {
   "default": {
-    rightJoystickRange: { min: -1, max: 1 } // Default range: -1 to 1
+    rightJoystickRange: { min: -1, max: 1 }
   },
-  "057e-2009-Pro Controller": { // Replace with actual gamepad.id of your special controller
-    rightJoystickRange: { min: -1.0, max: 0.0 } // Special range: -1.0 to 0.0
+  "057e-2009-Pro Controller": {
+    rightJoystickRange: { min: -1.0, max: 0.0 }
   }
 };
 
-// Send gamepad data to the server
-function updateGamepadInfo() {
-  const connectedGamepads = navigator.getGamepads();
+// =============================================================================
+// State
+// =============================================================================
+let ws = null;
+let wsReconnectAttempts = 0;
+let clients = [];
+let clientStats = {};
+let lastSentData = null;
+let pollingIntervalId = null;
 
-  // Collect the status of each connected gamepad
-  const gamepadData = connectedGamepads.map((gamepad) => {
-    if (!gamepad) return;
+// =============================================================================
+// WebSocket Management
+// =============================================================================
+function getWebSocketUrl() {
+  const host = window.location.host || 'localhost:8080';
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${host}/ws`;
+}
 
-    let gamepadAxes = [
-      -gamepad.axes[1].toFixed(1),  // Left joystick axis Y
-      gamepad.axes[2].toFixed(1)   // Right joystick axis X
-    ];
+function updateConnectionStatus(connected) {
+  const statusEl = document.getElementById('connection-status');
+  if (statusEl) {
+    statusEl.textContent = connected ? 'Connected' : 'Disconnected';
+    statusEl.className = `status ${connected ? 'connected' : 'disconnected'}`;
+  }
+}
 
-    // Check for special configuration based on gamepad.id
-    const controllerId = gamepad.id;
-    const config = controllerConfig[controllerId] || controllerConfig["default"]; // Default config if no special config
+function connectWebSocket() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    return;
+  }
 
-    // Remap the right joystick axis based on the controller's config
-    if (config.rightJoystickRange) {
-      gamepadAxes[1] = transformAxisToStandardRange(gamepad.axes[2], config.rightJoystickRange.min, config.rightJoystickRange.max, -1, 1).toFixed(1);
+  const url = getWebSocketUrl();
+  console.log(`WebSocket: Connecting to ${url}...`);
+
+  try {
+    ws = new WebSocket(url);
+  } catch (error) {
+    console.error('WebSocket: Failed to create connection:', error);
+    scheduleReconnect();
+    return;
+  }
+
+  ws.onopen = function() {
+    console.log('WebSocket: Connected');
+    wsReconnectAttempts = 0;
+    updateConnectionStatus(true);
+  };
+
+  ws.onmessage = function(event) {
+    try {
+      const json = JSON.parse(event.data);
+      clients = Object.keys(json);
+
+      // Update stats for each client
+      clients.forEach((clientIp, i) => {
+        const stats = json[clientIp];
+        clientStats[clientIp] = stats;
+        updateGamepadPanel(i, stats.fps, stats.frame_count);
+      });
+    } catch (error) {
+      console.error('WebSocket: Failed to parse message:', error);
     }
+  };
 
-    gamepadButtons = gamepad.buttons.map(button => +button.pressed);
+  ws.onclose = function(event) {
+    console.log(`WebSocket: Closed (code: ${event.code})`);
+    updateConnectionStatus(false);
+    ws = null;
 
-    requestAnimationFrame(() => {
-      // Get the gamepad info container
-      const gamepadInfoContainer = document.getElementById(`gamepad-info-${gamepad.index}`);
+    // Don't reconnect if closed cleanly by server shutdown
+    if (event.code !== 1001) {
+      scheduleReconnect();
+    }
+  };
 
-      // Selectively update the text content of specific child elements
-      const axesContainer = gamepadInfoContainer.querySelector(".axes");
-      const buttonsContainer = gamepadInfoContainer.querySelector(".buttons");
+  ws.onerror = function(error) {
+    console.error('WebSocket: Error:', error);
+  };
+}
 
-      // Only update what's changed
-      axesContainer.textContent = gamepadAxes.join(", ");
-      buttonsContainer.textContent = gamepadButtons.join(", ");
+function scheduleReconnect() {
+  if (wsReconnectAttempts >= CONFIG.WS_MAX_RECONNECT_ATTEMPTS) {
+    console.log('WebSocket: Max reconnection attempts reached');
+    return;
+  }
+
+  wsReconnectAttempts++;
+  const delay = CONFIG.WS_RECONNECT_DELAY * Math.min(wsReconnectAttempts, 5);
+  console.log(`WebSocket: Reconnecting in ${delay}ms (attempt ${wsReconnectAttempts})...`);
+
+  setTimeout(connectWebSocket, delay);
+}
+
+// =============================================================================
+// Gamepad Processing
+// =============================================================================
+function mapRange(value, inMin, inMax, outMin, outMax) {
+  return Math.round(outMin + (value - inMin) * (outMax - outMin) / (inMax - inMin));
+}
+
+function transformAxisToStandardRange(value, min, max) {
+  if (min === -1 && max === 1) {
+    return value;
+  }
+  return ((value - min) * 2) / (max - min) - 1;
+}
+
+function getControllerConfig(gamepadId) {
+  return CONTROLLER_CONFIGS[gamepadId] || CONTROLLER_CONFIGS["default"];
+}
+
+function processGamepad(gamepad) {
+  if (!gamepad) return null;
+
+  const config = getControllerConfig(gamepad.id);
+
+  // Get axis values
+  let throttleAxis = -gamepad.axes[1];  // Left stick Y (inverted)
+  let steeringAxis = gamepad.axes[2];    // Right stick X
+
+  // Apply controller-specific transformation
+  if (config.rightJoystickRange) {
+    const range = config.rightJoystickRange;
+    steeringAxis = transformAxisToStandardRange(steeringAxis, range.min, range.max);
+  }
+
+  // Clamp to valid range
+  throttleAxis = Math.max(-1, Math.min(1, throttleAxis));
+  steeringAxis = Math.max(-1, Math.min(1, steeringAxis));
+
+  // Map to output ranges
+  const throttle = mapRange(throttleAxis, -1, 1, CONFIG.THROTTLE_MIN, CONFIG.THROTTLE_MAX);
+  const steering = mapRange(steeringAxis, -1, 1, CONFIG.STEERING_MIN, CONFIG.STEERING_MAX);
+
+  return {
+    axes: [throttleAxis.toFixed(1), steeringAxis.toFixed(1)],
+    buttons: gamepad.buttons.map(button => +button.pressed),
+    command: [throttle, steering]
+  };
+}
+
+function updateGamepadDisplay(gamepadIndex, data) {
+  const container = document.getElementById(`gamepad-info-${gamepadIndex}`);
+  if (!container) return;
+
+  const axesEl = container.querySelector('.axes');
+  const buttonsEl = container.querySelector('.buttons');
+
+  if (axesEl && data.axes) {
+    axesEl.textContent = data.axes.join(', ');
+  }
+  if (buttonsEl && data.buttons) {
+    buttonsEl.textContent = data.buttons.join(', ');
+  }
+}
+
+function updateGamepadPanel(index, fps, frameCount) {
+  const panel = document.getElementById(`gamepad-info-${index}`);
+  if (!panel) return;
+
+  let statsEl = panel.querySelector('.stats');
+  if (!statsEl) {
+    statsEl = document.createElement('div');
+    statsEl.className = 'stats';
+    panel.appendChild(statsEl);
+  }
+
+  statsEl.textContent = `FPS: ${fps} | Frames: ${frameCount}`;
+}
+
+function pollGamepads() {
+  const gamepads = navigator.getGamepads();
+  const gamepadData = [];
+
+  for (const gamepad of gamepads) {
+    const data = processGamepad(gamepad);
+    if (data) {
+      gamepadData.push(data.command);
+
+      // Update display in next animation frame
+      requestAnimationFrame(() => {
+        updateGamepadDisplay(gamepad.index, data);
+      });
+    }
+  }
+
+  // Send to server if connected
+  if (ws && ws.readyState === WebSocket.OPEN && clients.length > 0) {
+    const payload = {};
+    clients.forEach((ip, i) => {
+      if (gamepadData[i]) {
+        payload[ip] = gamepadData[i];
+      }
     });
 
-    // Map the axes values to desired ranges
-    const result = [
-      Math.round(-255 + (gamepadAxes[0] - -1) * (255 - -255) / (1 - -1)),
-      Math.round(0 + (gamepadAxes[1] - -1) * (180 - 0) / (1 - -1))
-    ];
+    const jsonStr = JSON.stringify(payload);
+    if (jsonStr !== lastSentData && Object.keys(payload).length > 0) {
+      ws.send(jsonStr);
+      lastSentData = jsonStr;
+    }
+  }
+}
 
-    return result;
+// =============================================================================
+// Initialization
+// =============================================================================
+function init() {
+  // Setup video stream
+  const videoEl = document.getElementById('video-stream');
+  if (videoEl) {
+    const host = window.location.host || 'localhost:8080';
+    videoEl.src = `http://${host}/video`;
+
+    videoEl.onerror = function() {
+      console.error('Video: Failed to load stream');
+    };
+  }
+
+  // Connect WebSocket
+  connectWebSocket();
+
+  // Start gamepad polling
+  pollingIntervalId = setInterval(pollGamepads, CONFIG.GAMEPAD_POLLING_INTERVAL);
+
+  // Gamepad connection events
+  window.addEventListener('gamepadconnected', (event) => {
+    console.log(`Gamepad connected: ${event.gamepad.id} (index: ${event.gamepad.index})`);
   });
 
-  // Send the gamepad data to the server if WebSocket is open
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    json = {}
-    clients.forEach((ip, i) => json[ip] = gamepadData[i])
-    ws.send(JSON.stringify(json));
-  }
-}
+  window.addEventListener('gamepaddisconnected', (event) => {
+    console.log(`Gamepad disconnected: ${event.gamepad.id} (index: ${event.gamepad.index})`);
+  });
 
-// Transform axis from a custom range to the standard -1 to 1 range
-function transformAxisToStandardRange(value, min, max, newMin, newMax) {
-  if (min === -1 && max === 1) {
-    return value;  // No transformation needed for normal range
-  }
-
-  // Adjust the value before applying the transformation for special controllers
-  return ((value - min) * (newMax - newMin)) / (max - min) + newMin;
-}
-
-// Poll for gamepad status every 30ms
-function pollGamepads() {
-  setInterval(updateGamepadInfo, GAMEPAD_POLLING_INTERVAL);
-}
-
-// Start polling when gamepads are connected
-window.addEventListener("gamepadconnected", (event) => {
-  const gamepad = event.gamepad;
-  gamepads[gamepad.index] = gamepad;
-  console.log("Gamepad connected:", gamepad.id);
-});
-
-// Handle gamepad disconnection
-window.addEventListener("gamepaddisconnected", (event) => {
-  const gamepad = event.gamepad;
-  delete gamepads[gamepad.index];
-  console.log("Gamepad disconnected:", gamepad.id);
-});
-
-// Start the polling loop
-pollGamepads();
-
-// Update the gamepad panel with FPS and frame count information
-function updateGamepadPanel(clientIp, fps, frameCount) {
-  const gamepadPanel = document.getElementById(`gamepad-info-${clientIp}`);
-  if (gamepadPanel) {
-    let statsContainer = gamepadPanel.querySelector('.stats');
-    if (!statsContainer) {
-      statsContainer = document.createElement('div');
-      statsContainer.classList.add('stats');
-      gamepadPanel.appendChild(statsContainer);
+  // Cleanup on page unload
+  window.addEventListener('beforeunload', () => {
+    if (pollingIntervalId) {
+      clearInterval(pollingIntervalId);
     }
+    if (ws) {
+      ws.close(1000, 'Page unload');
+    }
+  });
 
-    // Update FPS and frame count
-    statsContainer.innerHTML = `FPS: ${fps}<br>Frames: ${frameCount}`;
-  }
+  console.log('ESP32 RC Control initialized');
+}
+
+// Start when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
 }

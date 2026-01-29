@@ -4,41 +4,81 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ESP32 RC</title>
+  <title>ESP32 RC Control</title>
   <link rel="stylesheet" href="static/app.css">
+  <style>
+    .status {
+      padding: 4px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .status.connected {
+      background: #22c55e;
+      color: white;
+    }
+    .status.disconnected {
+      background: #ef4444;
+      color: white;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 16px;
+      background: #1f2937;
+      color: white;
+    }
+    .header h1 {
+      margin: 0;
+      font-size: 18px;
+    }
+    .stats {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-top: 8px;
+    }
+  </style>
 </head>
 
 <body>
+  <div class="header">
+    <h1>ESP32 RC Control</h1>
+    <span id="connection-status" class="status disconnected">Disconnected</span>
+  </div>
+
   <div class="container">
     <div class="side-panels">
       <div id="gamepad-info-0" class="panel">
         <h3>Gamepad 1</h3>
-        <p>Axes: <span class="axes"></span></p>
-        <p>Buttons: <span class="buttons"></span></p>
+        <p>Axes: <span class="axes">--</span></p>
+        <p>Buttons: <span class="buttons">--</span></p>
       </div>
       <div id="gamepad-info-2" class="panel">
         <h3>Gamepad 3</h3>
-        <p>Axes: <span class="axes"></span></p>
-        <p>Buttons: <span class="buttons"></span></p>
+        <p>Axes: <span class="axes">--</span></p>
+        <p>Buttons: <span class="buttons">--</span></p>
       </div>
     </div>
+
     <div class="video-section">
-      <img src="http://localhost:8080/video" alt="Video Stream"></img>
-      <!-- <video src="http://localhost:8000/video" autoplay muted loop></video> -->
+      <img id="video-stream" alt="Video Stream">
     </div>
+
     <div class="side-panels">
       <div id="gamepad-info-1" class="panel">
         <h3>Gamepad 2</h3>
-        <p>Axes: <span class="axes"></span></p>
-        <p>Buttons: <span class="buttons"></span></p>
+        <p>Axes: <span class="axes">--</span></p>
+        <p>Buttons: <span class="buttons">--</span></p>
       </div>
       <div id="gamepad-info-3" class="panel">
         <h3>Gamepad 4</h3>
-        <p>Axes: <span class="axes"></span></p>
-        <p>Buttons: <span class="buttons"></span></p>
+        <p>Axes: <span class="axes">--</span></p>
+        <p>Buttons: <span class="buttons">--</span></p>
       </div>
     </div>
   </div>
+
   <script src="./static/app.js"></script>
 </body>
 
